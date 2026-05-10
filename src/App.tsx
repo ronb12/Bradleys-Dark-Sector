@@ -457,10 +457,11 @@ function applyEnemyVariant(enemy: THREE.Group, enemyType: EnemyType) {
     const materials = Array.isArray(child.material) ? child.material : [child.material];
     materials.forEach((material) => {
       if (!(material instanceof THREE.MeshStandardMaterial) || !material.color) return;
-      material.color.offsetHSL(0, enemyType.tacticalRole === "heavy" ? -0.06 : 0.02, enemyType.tacticalRole === "marksman" ? -0.05 : -0.02);
+      material.color.offsetHSL(0, enemyType.tacticalRole === "heavy" ? 0.02 : 0.06, enemyType.tacticalRole === "marksman" ? 0.08 : 0.05);
+      material.emissive = new THREE.Color(accent);
+      material.emissiveIntensity = Math.max(material.emissiveIntensity || 0, 0.025);
       if (enemyType.tacticalRole === "commander") {
-        material.emissive = new THREE.Color(0x120402);
-        material.emissiveIntensity = 0.12;
+        material.emissiveIntensity = 0.08;
       }
     });
   });
@@ -482,6 +483,13 @@ function applyEnemyVariant(enemy: THREE.Group, enemyType: EnemyType) {
     rolePlate.name = "DarkSectorRolePlate";
     rolePlate.position.set(0, 1.88, -0.43);
     enemy.add(rolePlate);
+  }
+
+  if (!enemy.getObjectByName("DarkSectorThreatLight")) {
+    const threatLight = new THREE.PointLight(accent, 1.8, 8);
+    threatLight.name = "DarkSectorThreatLight";
+    threatLight.position.set(0, 1.7, -0.9);
+    enemy.add(threatLight);
   }
 }
 
