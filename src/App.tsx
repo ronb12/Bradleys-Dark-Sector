@@ -85,6 +85,210 @@ type BoneSnapshot = {
   position: THREE.Vector3;
 };
 
+function findRigNode<T extends THREE.Object3D = THREE.Object3D>(model: THREE.Object3D, names: string[]) {
+  const lower = names.map((name) => name.toLowerCase());
+  let match: T | null = null;
+  model.traverse((child) => {
+    if (match) return;
+    if (lower.includes(child.name.toLowerCase())) {
+      match = child as T;
+    }
+  });
+  return match;
+}
+
+function makeRifleProp() {
+  const group = new THREE.Group();
+  const rifleBlack = makeMaterial(0x0a0d0f, 0.45, 0.72);
+  const rifleMetal = makeMaterial(0x48515f, 0.35, 0.86);
+  const tape = makeMaterial(0x5a5342, 0.9, 0.03);
+
+  const body = new THREE.Mesh(new THREE.BoxGeometry(0.72, 0.08, 0.08), rifleBlack);
+  body.position.set(0, 0, 0);
+  group.add(body);
+
+  const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.018, 0.52, 10), rifleMetal);
+  barrel.rotation.z = Math.PI / 2;
+  barrel.position.set(0.52, -0.005, 0);
+  group.add(barrel);
+
+  const stock = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.11, 0.12), rifleBlack);
+  stock.position.set(-0.34, -0.03, 0.02);
+  stock.rotation.z = -0.28;
+  group.add(stock);
+
+  const handguard = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.09, 0.09), rifleBlack);
+  handguard.position.set(0.2, 0, 0);
+  group.add(handguard);
+
+  const mag = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.18, 0.06), rifleBlack);
+  mag.position.set(-0.02, -0.14, 0);
+  mag.rotation.z = -0.24;
+  group.add(mag);
+
+  const scope = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.06, 0.08), rifleMetal);
+  scope.position.set(0.04, 0.08, 0);
+  group.add(scope);
+
+  const sling = new THREE.Mesh(new THREE.TorusGeometry(0.26, 0.008, 8, 20, Math.PI), tape);
+  sling.rotation.set(Math.PI / 2, 0.18, Math.PI / 2);
+  sling.position.set(-0.04, 0.02, 0.04);
+  group.add(sling);
+
+  group.name = "DarkSectorRifleProp";
+  return group;
+}
+
+function applyCombatRestPose(model: THREE.Group) {
+  const setEuler = (boneNames: string[], x: number, y: number, z: number) => {
+    const bone = findRigNode<THREE.Bone>(model, boneNames);
+    if (!bone) return;
+    bone.rotation.x += x;
+    bone.rotation.y += y;
+    bone.rotation.z += z;
+    bone.updateMatrixWorld(true);
+  };
+
+  setEuler(["mixamorig:Spine", "Spine"], -0.18, 0.04, 0);
+  setEuler(["mixamorig:Spine1", "Spine1"], -0.2, 0.07, 0);
+  setEuler(["mixamorig:Neck", "Neck"], 0.08, 0, 0);
+  setEuler(["mixamorig:Head", "Head"], 0.06, 0.02, 0);
+
+  setEuler(["mixamorig:LeftShoulder", "LeftShoulder"], 0, 0, -0.12);
+  setEuler(["mixamorig:RightShoulder", "RightShoulder"], 0, 0, 0.12);
+  setEuler(["mixamorig:LeftArm", "LeftArm"], -0.75, 0.18, -0.62);
+  setEuler(["mixamorig:RightArm", "RightArm"], -0.92, -0.3, 0.24);
+  setEuler(["mixamorig:LeftForeArm", "LeftForeArm"], -1.1, 0.08, -0.18);
+  setEuler(["mixamorig:RightForeArm", "RightForeArm"], -1.28, -0.05, 0.16);
+  setEuler(["mixamorig:LeftHand", "LeftHand"], 0.1, 0.1, -0.1);
+  setEuler(["mixamorig:RightHand", "RightHand"], 0.08, -0.22, 0.2);
+
+  setEuler(["mixamorig:LeftUpLeg", "LeftUpLeg"], 0.08, 0.03, 0.02);
+  setEuler(["mixamorig:RightUpLeg", "RightUpLeg"], -0.06, -0.03, -0.02);
+}
+
+function attachSoldierGear(model: THREE.Group) {
+  const head = findRigNode<THREE.Bone>(model, ["mixamorig:Head", "Head"]);
+  const spine = findRigNode<THREE.Bone>(model, ["mixamorig:Spine1", "Spine1", "mixamorig:Spine", "Spine"]);
+  const rightHand = findRigNode<THREE.Bone>(model, ["mixamorig:RightHand", "RightHand"]);
+  const leftForeArm = findRigNode<THREE.Bone>(model, ["mixamorig:LeftForeArm", "LeftForeArm"]);
+
+  if (head && !head.getObjectByName("DarkSectorHelmet")) {
+    const helmet = new THREE.Mesh(
+      new THREE.SphereGeometry(9.5, 18, 12, 0, Math.PI * 2, 0, Math.PI * 0.58),
+      makeMaterial(0x4b5a46, 0.96, 0.03)
+    );
+    helmet.name = "DarkSectorHelmet";
+    helmet.scale.set(1.08, 0.86, 1.12);
+    helmet.position.set(0, 4.5, 1.25);
+    helmet.rotation.x = -0.08;
+    head.add(helmet);
+
+    const visor = new THREE.Mesh(
+      new THREE.BoxGeometry(12, 2.5, 1.4),
+      makeMaterial(0x13181c, 0.35, 0.78)
+    );
+    visor.position.set(0, 0.3, -7.1);
+    helmet.add(visor);
+
+    const strap = new THREE.Mesh(
+      new THREE.TorusGeometry(6.3, 0.34, 8, 20, Math.PI),
+      makeMaterial(0x0d0f10, 0.75, 0.12)
+    );
+    strap.rotation.x = Math.PI / 2;
+    strap.position.set(0, -5.7, 0.8);
+    helmet.add(strap);
+  }
+
+  if (spine && !spine.getObjectByName("DarkSectorVest")) {
+    const vest = new THREE.Group();
+    vest.name = "DarkSectorVest";
+    vest.position.set(0, -1, 0);
+
+    const carrier = new THREE.Mesh(
+      new THREE.BoxGeometry(13, 16, 6),
+      makeMaterial(0x303b2a, 0.98, 0.02)
+    );
+    carrier.position.set(0, 0, 0);
+    vest.add(carrier);
+
+    const plate = new THREE.Mesh(
+      new THREE.BoxGeometry(10.5, 12, 1.8),
+      makeMaterial(0x171b16, 0.88, 0.08)
+    );
+    plate.position.set(0, -0.5, -3.1);
+    vest.add(plate);
+
+    for (let i = 0; i < 3; i += 1) {
+      const pouch = new THREE.Mesh(
+        new THREE.BoxGeometry(2.2, 3.4, 1.6),
+        makeMaterial(0x111611, 0.84, 0.06)
+      );
+      pouch.position.set(-3.2 + i * 3.2, 3.1, -4.1);
+      vest.add(pouch);
+    }
+
+    const radio = new THREE.Mesh(
+      new THREE.BoxGeometry(2, 4.4, 1.5),
+      makeMaterial(0x101416, 0.66, 0.22)
+    );
+    radio.position.set(-5.2, 0.2, 2.4);
+    vest.add(radio);
+
+    const antenna = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.12, 0.12, 8.5, 8),
+      makeMaterial(0x0a0d0f, 0.5, 0.64)
+    );
+    antenna.position.set(-5.8, 5.2, 2.8);
+    antenna.rotation.z = 0.16;
+    vest.add(antenna);
+
+    spine.add(vest);
+  }
+
+  if (rightHand && !rightHand.getObjectByName("DarkSectorRifleProp")) {
+    const rifle = makeRifleProp();
+    rifle.position.set(2.2, -1.6, -1.2);
+    rifle.rotation.set(Math.PI, 0.08, -1.42);
+    rightHand.add(rifle);
+  }
+
+  if (leftForeArm && !leftForeArm.getObjectByName("DarkSectorGripPad")) {
+    const pad = new THREE.Mesh(
+      new THREE.BoxGeometry(1.8, 4.2, 1.8),
+      makeMaterial(0x131715, 0.82, 0.08)
+    );
+    pad.name = "DarkSectorGripPad";
+    pad.position.set(0.6, -2.2, 0);
+    pad.rotation.z = -0.18;
+    leftForeArm.add(pad);
+  }
+}
+
+function stylizeEnemyRig(model: THREE.Group) {
+  applyCombatRestPose(model);
+  attachSoldierGear(model);
+  model.traverse((child) => {
+    if (child instanceof THREE.Mesh) {
+      const materials = Array.isArray(child.material) ? child.material : [child.material];
+      materials.forEach((material) => {
+        if (!(material instanceof THREE.MeshStandardMaterial)) return;
+        material.roughness = Math.min(0.98, Math.max(material.roughness ?? 0.8, 0.58));
+        material.metalness = Math.max(material.metalness ?? 0.06, 0.06);
+        if (material.color) {
+          const hsl = { h: 0, s: 0, l: 0 };
+          material.color.getHSL(hsl);
+          if (hsl.s < 0.12) {
+            material.color.offsetHSL(0.08, 0.18, -0.18);
+          } else {
+            material.color.offsetHSL(0.02, 0.08, -0.12);
+          }
+        }
+      });
+    }
+  });
+}
+
 function buildMixamoCombatClips(model: THREE.Group) {
   const rest = new Map<string, BoneSnapshot>();
   model.traverse((child) => {
@@ -470,6 +674,7 @@ function spawnEnemyFromTemplate(
 function setupFbxModelAsEnemyTemplate(state: GameState, fbxModel: THREE.Group, label: string) {
   enableShadows(fbxModel);
   fbxModel.scale.setScalar(0.0125);
+  stylizeEnemyRig(fbxModel);
   fbxModel.traverse((child) => {
     if (child instanceof THREE.Mesh) {
       child.castShadow = true;
