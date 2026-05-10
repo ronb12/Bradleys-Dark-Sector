@@ -68,7 +68,7 @@ const ENEMY_TYPES: EnemyType[] = [
   { name: "Commander", color: 0x4e3832, hp: 170, speed: 2.15, score: 350 },
 ];
 
-const SOLDIER_MODEL_URL = "/models/mixamo-soldier.glb";
+const SOLDIER_MODEL_URL = "";
 const FBX_MODEL_URL = "/models/soldier.fbx";
 const FBX_IDLE_MODEL_FALLBACK_URL = "/models/idle.fbx";
 const FBX_ANIMATION_URLS: Record<string, string> = {
@@ -369,16 +369,18 @@ async function loadEnemyModel(state: GameState, setHud: React.Dispatch<React.Set
   };
 
   try {
-    const gltf = await gltfLoader.loadAsync(SOLDIER_MODEL_URL);
-    const model = gltf.scene;
-    model.scale.setScalar(1.08);
-    model.rotation.y = Math.PI;
-    enableShadows(model);
-    state.enemyTemplate = model;
-    state.enemyAnimations = gltf.animations || [];
-    state.enemyModelLoaded = true;
-    setMode("Mixamo GLB soldier");
-    return;
+    if (SOLDIER_MODEL_URL) {
+      const gltf = await gltfLoader.loadAsync(SOLDIER_MODEL_URL);
+      const model = gltf.scene;
+      model.scale.setScalar(1.08);
+      model.rotation.y = Math.PI;
+      enableShadows(model);
+      state.enemyTemplate = model;
+      state.enemyAnimations = gltf.animations || [];
+      state.enemyModelLoaded = true;
+      setMode("Mixamo GLB soldier");
+      return;
+    }
   } catch (error) {
     console.warn("GLB model unavailable, trying FBX.", error);
   }
