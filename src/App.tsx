@@ -11,6 +11,9 @@ type Hud = {
   enemies: number;
   wave: number;
   modelMode: string;
+  objective: string;
+  armorStatus: string;
+  kills: number;
 };
 
 type LeaderboardEntry = {
@@ -27,6 +30,33 @@ type EnemyType = {
   hp: number;
   speed: number;
   score: number;
+  scale: number;
+  aggression: number;
+  preferredRange: number;
+  accuracy: number;
+  tacticalRole: "assault" | "heavy" | "marksman" | "commander";
+};
+
+type CombatStats = {
+  kills: number;
+  shotsFired: number;
+  shotsHit: number;
+  headshots: number;
+  waveStartTime: number;
+};
+
+type CoverNode = {
+  position: THREE.Vector3;
+  lane: "north" | "south" | "east" | "west" | "center";
+};
+
+type AudioState = {
+  context: AudioContext | null;
+  master: GainNode | null;
+  sfx: GainNode | null;
+  music: GainNode | null;
+  ambience: OscillatorNode | null;
+  started: boolean;
 };
 
 type GameState = {
@@ -58,14 +88,33 @@ type GameState = {
   mixers: THREE.AnimationMixer[];
   enemyModelLoaded: boolean;
   fbxModeLoaded: boolean;
+  velocity: THREE.Vector3;
+  bobTime: number;
+  spawnPoints: THREE.Vector3[];
+  coverNodes: CoverNode[];
+  stats: CombatStats;
+  damagePulse: number;
+  lastKillAt: number;
+  lastHitAt: number;
+  waveBannerUntil: number;
+  paused: boolean;
+  enemySpawnCursor: number;
+  audio: AudioState;
+};
+
+type Settings = {
+  sensitivity: number;
+  music: number;
+  sfx: number;
+  difficulty: "operator" | "veteran" | "blackout";
 };
 
 const ENEMY_TYPES: EnemyType[] = [
-  { name: "Rifleman", color: 0x5b5f45, hp: 75, speed: 2.45, score: 100 },
-  { name: "Scout", color: 0x3e5541, hp: 55, speed: 3.35, score: 130 },
-  { name: "Heavy", color: 0x665a3d, hp: 135, speed: 1.7, score: 220 },
-  { name: "Sniper", color: 0x34432f, hp: 65, speed: 2.05, score: 180 },
-  { name: "Commander", color: 0x4e3832, hp: 170, speed: 2.15, score: 350 },
+  { name: "Rifleman", color: 0x5b5f45, hp: 85, speed: 2.4, score: 100, scale: 1.06, aggression: 0.72, preferredRange: 15, accuracy: 0.72, tacticalRole: "assault" },
+  { name: "Scout", color: 0x3e5541, hp: 65, speed: 3.6, score: 130, scale: 0.98, aggression: 0.88, preferredRange: 11, accuracy: 0.62, tacticalRole: "assault" },
+  { name: "Heavy", color: 0x665a3d, hp: 170, speed: 1.85, score: 220, scale: 1.18, aggression: 0.66, preferredRange: 14, accuracy: 0.68, tacticalRole: "heavy" },
+  { name: "Sniper", color: 0x34432f, hp: 75, speed: 2.2, score: 180, scale: 1.04, aggression: 0.54, preferredRange: 24, accuracy: 0.82, tacticalRole: "marksman" },
+  { name: "Commander", color: 0x4e3832, hp: 210, speed: 2.3, score: 350, scale: 1.12, aggression: 0.9, preferredRange: 16, accuracy: 0.84, tacticalRole: "commander" },
 ];
 
 const SOLDIER_MODEL_URL = "";
@@ -79,6 +128,15 @@ const FBX_ANIMATION_URLS: Record<string, string> = {
 };
 
 const SHOOT_ANIMATION_LOCK_SECONDS = 0.32;
+const WAVE_BANNER_SECONDS = 2.8;
+const HITMARKER_SECONDS = 0.16;
+const KILLFLASH_SECONDS = 0.35;
+const DEFAULT_SETTINGS: Settings = {
+  sensitivity: 1,
+  music: 0.45,
+  sfx: 0.72,
+  difficulty: "veteran",
+};
 
 type BoneSnapshot = {
   quaternion: THREE.Quaternion;
@@ -287,6 +345,129 @@ function stylizeEnemyRig(model: THREE.Group) {
       });
     }
   });
+}
+
+function getDifficultyScalar(settings: Settings) {
+  if (settings.difficulty === "operator") return 0.9;
+  if (settings.difficulty === "blackout") return 1.18;
+  return 1;
+}
+
+function makeAudioState(): AudioState {
+  return {
+    context: null,
+    master: null,
+    sfx: null,
+    music: null,
+    ambience: null,
+    started: false,
+  };
+}
+
+function ensureAudio(state: GameState, settings: Settings) {
+  if (state.audio.started || typeof window === "undefined") return;
+  const AudioCtx = window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+  if (!AudioCtx) return;
+  const context = new AudioCtx();
+  const master = context.createGain();
+  const sfx = context.createGain();
+  const music = context.createGain();
+  master.gain.value = 0.7;
+  sfx.gain.value = settings.sfx;
+  music.gain.value = settings.music;
+  sfx.connect(master);
+  music.connect(master);
+  master.connect(context.destination);
+
+  const ambience = context.createOscillator();
+  const ambienceGain = context.createGain();
+  ambience.type = "sawtooth";
+  ambience.frequency.value = 46;
+  ambienceGain.gain.value = 0.012 * settings.music;
+  ambience.connect(ambienceGain);
+  ambienceGain.connect(music);
+  ambience.start();
+
+  state.audio = { context, master, sfx, music, ambience, started: true };
+}
+
+function playTone(state: GameState, frequency: number, duration: number, type: OscillatorType, volume: number, slideTo?: number) {
+  const context = state.audio.context;
+  const sfx = state.audio.sfx;
+  if (!context || !sfx) return;
+  const osc = context.createOscillator();
+  const gain = context.createGain();
+  osc.type = type;
+  osc.frequency.setValueAtTime(frequency, context.currentTime);
+  if (slideTo) {
+    osc.frequency.exponentialRampToValueAtTime(slideTo, context.currentTime + duration);
+  }
+  gain.gain.setValueAtTime(Math.max(0.0001, volume), context.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.0001, context.currentTime + duration);
+  osc.connect(gain);
+  gain.connect(sfx);
+  osc.start();
+  osc.stop(context.currentTime + duration + 0.02);
+}
+
+function playGunshotAudio(state: GameState) {
+  playTone(state, 120, 0.08, "square", 0.1, 70);
+  playTone(state, 240, 0.05, "triangle", 0.08, 140);
+}
+
+function playHitAudio(state: GameState, kill = false) {
+  playTone(state, kill ? 900 : 620, kill ? 0.12 : 0.08, "triangle", kill ? 0.08 : 0.05, kill ? 320 : 500);
+}
+
+function playEnemyShotAudio(state: GameState) {
+  playTone(state, 180, 0.05, "sawtooth", 0.04, 110);
+}
+
+function playReloadAudio(state: GameState) {
+  playTone(state, 340, 0.05, "square", 0.035, 260);
+  playTone(state, 480, 0.07, "triangle", 0.028, 360);
+}
+
+function createEnemyBeacon(color: number) {
+  const group = new THREE.Group();
+  group.name = "DarkSectorEnemyBeacon";
+  const glow = new THREE.Mesh(
+    new THREE.SphereGeometry(4.2, 12, 10),
+    new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.88 })
+  );
+  glow.scale.set(0.65, 0.28, 0.18);
+  glow.position.set(0, 0, -6.9);
+  group.add(glow);
+  return group;
+}
+
+function applyEnemyVariant(enemy: THREE.Group, enemyType: EnemyType) {
+  enemy.scale.multiplyScalar(enemyType.scale);
+  enemy.userData.enemyType = enemyType;
+  enemy.userData.nextShotAt = 0;
+  enemy.userData.coverCooldown = 0;
+  enemy.userData.targetCover = null;
+  enemy.traverse((child) => {
+    if (!(child instanceof THREE.Mesh)) return;
+    const materials = Array.isArray(child.material) ? child.material : [child.material];
+    materials.forEach((material) => {
+      if (!(material instanceof THREE.MeshStandardMaterial) || !material.color) return;
+      material.color.offsetHSL(0, enemyType.tacticalRole === "heavy" ? -0.06 : 0.02, enemyType.tacticalRole === "marksman" ? -0.05 : -0.02);
+      if (enemyType.tacticalRole === "commander") {
+        material.emissive = new THREE.Color(0x120402);
+        material.emissiveIntensity = 0.12;
+      }
+    });
+  });
+
+  const head = findRigNode<THREE.Bone>(enemy, ["mixamorig:Head", "Head"]);
+  if (head && !head.getObjectByName("DarkSectorEnemyBeacon")) {
+    const beacon = createEnemyBeacon(
+      enemyType.tacticalRole === "marksman" ? 0x7dd3fc : enemyType.tacticalRole === "heavy" ? 0xff8a3d : 0xff4d4d
+    );
+    if (enemyType.tacticalRole === "heavy") beacon.scale.setScalar(1.2);
+    head.add(beacon);
+  }
 }
 
 function buildMixamoCombatClips(model: THREE.Group) {
@@ -657,6 +838,7 @@ function spawnEnemyFromTemplate(
   enemy.userData.flank = Math.random() > 0.5 ? 1 : -1;
   enemy.userData.kind = enemyType.name;
   enemy.userData.lockedUntil = 0;
+  applyEnemyVariant(enemy, enemyType);
   if (state.enemyTemplate) {
     enemy.traverse((child) => {
       if (child instanceof THREE.Mesh) {
@@ -986,6 +1168,37 @@ function addEnvironment(scene: THREE.Scene, colliders: THREE.Box3[]) {
   }
 }
 
+function makeCoverNode(x: number, z: number, lane: CoverNode["lane"]) {
+  return { position: new THREE.Vector3(x, 0, z), lane };
+}
+
+function getBattlefieldLayout() {
+  return {
+    spawnPoints: [
+      new THREE.Vector3(-24, 0, -18),
+      new THREE.Vector3(0, 0, -26),
+      new THREE.Vector3(24, 0, -16),
+      new THREE.Vector3(-26, 0, 8),
+      new THREE.Vector3(26, 0, 8),
+      new THREE.Vector3(-18, 0, 24),
+      new THREE.Vector3(0, 0, 28),
+      new THREE.Vector3(18, 0, 24),
+    ],
+    coverNodes: [
+      makeCoverNode(-9, -12, "north"),
+      makeCoverNode(0, -10, "north"),
+      makeCoverNode(9, -12, "north"),
+      makeCoverNode(-14, 2, "west"),
+      makeCoverNode(-6, 4, "center"),
+      makeCoverNode(6, 3, "center"),
+      makeCoverNode(14, 2, "east"),
+      makeCoverNode(-11, 15, "south"),
+      makeCoverNode(0, 13, "south"),
+      makeCoverNode(11, 15, "south"),
+    ],
+  };
+}
+
 function initScene(container: HTMLDivElement): GameState {
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x070806);
@@ -1041,6 +1254,7 @@ function initScene(container: HTMLDivElement): GameState {
   addEnvironment(scene, colliders);
   addDust(scene);
   addFogBanks(scene);
+  const layout = getBattlefieldLayout();
 
   const player = new THREE.Group();
   player.position.set(0, 0, 8);
@@ -1089,6 +1303,24 @@ function initScene(container: HTMLDivElement): GameState {
     mixers: [],
     enemyModelLoaded: false,
     fbxModeLoaded: false,
+    velocity: new THREE.Vector3(),
+    bobTime: 0,
+    spawnPoints: layout.spawnPoints,
+    coverNodes: layout.coverNodes,
+    stats: {
+      kills: 0,
+      shotsFired: 0,
+      shotsHit: 0,
+      headshots: 0,
+      waveStartTime: 0,
+    },
+    damagePulse: 0,
+    lastKillAt: -10,
+    lastHitAt: -10,
+    waveBannerUntil: 0,
+    paused: false,
+    enemySpawnCursor: 0,
+    audio: makeAudioState(),
   };
 }
 
@@ -1101,8 +1333,41 @@ function canMoveTo(state: GameState, position: THREE.Vector3) {
 }
 
 function animateSoldier(group: THREE.Group, dt: number, moving: boolean) {
-  const sway = moving ? Math.sin(Date.now() * 0.01) * 0.04 : 0;
+  const sway = moving ? Math.sin(Date.now() * 0.01) * 0.04 : Math.sin(Date.now() * 0.004) * 0.008;
   group.position.y = (group.userData.baseY || 0) + sway;
+}
+
+function getArmorStatus(health: number) {
+  if (health > 75) return "Nominal";
+  if (health > 45) return "Stressed";
+  if (health > 20) return "Critical";
+  return "Failing";
+}
+
+function getObjectiveText(state: GameState) {
+  if (state.wave === 1 && state.stats.kills < 3) return "Secure the outer yard";
+  if (state.wave <= 2) return "Thin the first assault line";
+  if (state.wave <= 4) return "Hold the central compound";
+  return "Break the command wave";
+}
+
+function getBestCoverNode(state: GameState, enemy: THREE.Group, enemyType: EnemyType) {
+  const playerPos = state.player.position;
+  let best: CoverNode | null = null;
+  let bestScore = Number.POSITIVE_INFINITY;
+  state.coverNodes.forEach((node) => {
+    const enemyDist = node.position.distanceTo(enemy.position);
+    const playerDist = node.position.distanceTo(playerPos);
+    if (enemyDist > 18 || playerDist < 7) return;
+    const laneBias =
+      enemyType.tacticalRole === "marksman" ? Math.abs(node.position.z - playerPos.z) * -0.3 : Math.abs(node.position.x - playerPos.x) * -0.08;
+    const score = enemyDist + playerDist * 0.25 + laneBias;
+    if (score < bestScore) {
+      bestScore = score;
+      best = node;
+    }
+  });
+  return best;
 }
 
 function triggerSoldierShootAnimation(state: GameState, soldier: THREE.Group) {
@@ -1110,34 +1375,42 @@ function triggerSoldierShootAnimation(state: GameState, soldier: THREE.Group) {
   soldier.userData.lockedUntil = state.clock.elapsedTime + SHOOT_ANIMATION_LOCK_SECONDS;
 }
 
-function shoot(state: GameState) {
+function shoot(state: GameState, setHitMarker?: React.Dispatch<React.SetStateAction<number>>, setCombatMessage?: React.Dispatch<React.SetStateAction<string>>) {
   if (!state.running || state.fireCooldown > 0 || state.reload > 0) return;
   if (state.ammo <= 0) {
     state.reload = 1.4;
+    playReloadAudio(state);
     return;
   }
 
   state.ammo -= 1;
+  state.stats.shotsFired += 1;
   state.fireCooldown = 0.12;
-  state.recoil = 1;
+  state.recoil = 1.85;
+  playGunshotAudio(state);
 
   const origin = new THREE.Vector3();
   state.camera.getWorldPosition(origin);
   const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(state.camera.quaternion).normalize();
 
-  let closestHit: { enemy: THREE.Group; distance: number } | null = null;
+  let closestHit: { enemy: THREE.Group; distance: number; angle: number } | null = null;
   state.enemies.forEach((enemy) => {
-    const target = enemy.position.clone().add(new THREE.Vector3(0, 1.35, 0));
+    const target = enemy.position.clone().add(new THREE.Vector3(0, 1.5, 0));
     const projected = target.clone().sub(origin);
     const distance = projected.length();
     const angle = dir.angleTo(projected.normalize());
-    if (angle < 0.09 && (!closestHit || distance < closestHit.distance)) {
-      closestHit = { enemy, distance };
+    if (angle < 0.115 && (!closestHit || distance < closestHit.distance)) {
+      closestHit = { enemy, distance, angle };
     }
   });
 
   if (closestHit) {
-    closestHit.enemy.userData.hp -= 34;
+    const damage = closestHit.angle < 0.04 ? 52 : 38;
+    closestHit.enemy.userData.hp -= damage;
+    state.stats.shotsHit += 1;
+    state.lastHitAt = state.clock.elapsedTime;
+    setHitMarker?.(performance.now());
+    if (damage >= 52) state.stats.headshots += 1;
     closestHit.enemy.traverse((child) => {
       if (child instanceof THREE.Mesh && child.material instanceof THREE.MeshStandardMaterial) {
         child.material.emissive = new THREE.Color(0xff5533);
@@ -1147,6 +1420,12 @@ function shoot(state: GameState) {
         }, 90);
       }
     });
+    const killed = closestHit.enemy.userData.hp <= 0;
+    playHitAudio(state, killed);
+    if (killed) {
+      state.lastKillAt = state.clock.elapsedTime;
+      setCombatMessage?.(`${closestHit.enemy.userData.kind} down`);
+    }
   }
 
   const bullet = new THREE.Mesh(
@@ -1183,10 +1462,23 @@ function updateAtmosphere(scene: THREE.Scene, time: number) {
   });
 }
 
-function updateGame(state: GameState, dt: number, keys: Record<string, boolean>, setHud: React.Dispatch<React.SetStateAction<Hud>>, setGameOver: React.Dispatch<React.SetStateAction<boolean>>) {
+function updateGame(
+  state: GameState,
+  dt: number,
+  keys: Record<string, boolean>,
+  settings: Settings,
+  setHud: React.Dispatch<React.SetStateAction<Hud>>,
+  setGameOver: React.Dispatch<React.SetStateAction<boolean>>,
+  setCombatMessage: React.Dispatch<React.SetStateAction<string>>
+) {
   state.fireCooldown = Math.max(0, state.fireCooldown - dt);
   state.reload = Math.max(0, state.reload - dt);
-  if (state.reload === 0 && state.ammo <= 0) state.ammo = state.maxAmmo;
+  state.damagePulse = Math.max(0, state.damagePulse - dt * 1.8);
+  if (state.reload === 0 && state.ammo <= 0) {
+    state.ammo = state.maxAmmo;
+    playReloadAudio(state);
+    setCombatMessage("Magazine seated");
+  }
 
   const forward = new THREE.Vector3(Math.sin(state.yaw), 0, -Math.cos(state.yaw)).normalize();
   const right = new THREE.Vector3()
@@ -1201,46 +1493,70 @@ function updateGame(state: GameState, dt: number, keys: Record<string, boolean>,
 
   const moving = move.lengthSq() > 0;
   if (moving) move.normalize();
-  const speed = keys["shift"] ? 8.4 : 5.25;
-  const nextPos = state.player.position.clone().add(move.multiplyScalar(speed * dt));
+  const sprinting = keys["shift"] && moving;
+  const targetSpeed = sprinting ? 9.4 : 5.8;
+  const targetVelocity = move.multiplyScalar(targetSpeed);
+  state.velocity.lerp(targetVelocity, Math.min(1, dt * 7.5));
+  const nextPos = state.player.position.clone().add(state.velocity.clone().multiplyScalar(dt));
   if (!moving || canMoveTo(state, nextPos)) {
     state.player.position.copy(nextPos);
   }
 
+  state.bobTime += dt * (sprinting ? 10.5 : moving ? 7 : 2.5);
   state.camera.position.copy(state.player.position).add(new THREE.Vector3(0, 1.95, 0));
   state.camera.rotation.order = "YXZ";
   state.camera.rotation.y = state.yaw;
-  state.camera.rotation.x = state.pitch + state.recoil * 0.035;
-  state.weapon.position.set(0.38, -0.28 - Math.abs(Math.sin(Date.now() * 0.012)) * 0.01, -0.75);
-  state.recoil = Math.max(0, state.recoil - dt * 6.5);
+  state.camera.rotation.x = state.pitch + state.recoil * 0.045 + Math.sin(state.bobTime) * (moving ? 0.008 : 0);
+  state.camera.fov = THREE.MathUtils.lerp(state.camera.fov, sprinting ? 78 : 72, dt * 4);
+  state.camera.updateProjectionMatrix();
+  state.weapon.position.set(
+    0.38 + Math.sin(state.bobTime * 0.5) * (moving ? 0.015 : 0.005),
+    -0.28 - Math.abs(Math.sin(state.bobTime)) * (moving ? 0.02 : 0.007),
+    -0.75
+  );
+  state.weapon.rotation.z = Math.sin(state.bobTime) * (moving ? 0.02 : 0.004);
+  state.recoil = Math.max(0, state.recoil - dt * 8.5);
 
   state.allies.forEach((ally, index) => {
-    animateSoldier(ally, dt, true);
+    animateSoldier(ally, dt, moving);
     ally.lookAt(state.player.position.clone().add(new THREE.Vector3(Math.sin(index), 1.2, Math.cos(index))));
   });
 
   if (state.enemies.length < Math.min(6 + state.wave * 2, 18)) {
     const type = ENEMY_TYPES[Math.floor(Math.random() * ENEMY_TYPES.length)];
-    const radius = 25 + Math.random() * 18;
-    const angle = Math.random() * Math.PI * 2;
-    spawnEnemyFromTemplate(state, type, Math.cos(angle) * radius, Math.sin(angle) * radius);
+    const spawn = state.spawnPoints[state.enemySpawnCursor % state.spawnPoints.length];
+    state.enemySpawnCursor += 1;
+    const offset = new THREE.Vector3((Math.random() - 0.5) * 3.5, 0, (Math.random() - 0.5) * 3.5);
+    spawnEnemyFromTemplate(state, type, spawn.x + offset.x, spawn.z + offset.z);
   }
 
   state.enemies = state.enemies.filter((enemy) => {
     if (enemy.userData.hp <= 0) {
       state.scene.remove(enemy);
       state.score += enemy.userData.score || 100;
+      state.stats.kills += 1;
       return false;
     }
 
+    const enemyType = (enemy.userData.enemyType as EnemyType | undefined) || ENEMY_TYPES[0];
     const toPlayer = state.player.position.clone().sub(enemy.position);
     const distance = toPlayer.length();
     toPlayer.normalize();
     const flank = new THREE.Vector3(-toPlayer.z, 0, toPlayer.x)
       .normalize()
       .multiplyScalar(enemy.userData.flank || 1);
-    const speedFactor = enemy.userData.speed || 2;
-    const desired = distance > 7 ? toPlayer : flank;
+    const speedFactor = (enemy.userData.speed || 2) * getDifficultyScalar(settings);
+    if ((!enemy.userData.targetCover || enemy.userData.coverCooldown < state.clock.elapsedTime) && distance > enemyType.preferredRange * 0.8) {
+      enemy.userData.targetCover = getBestCoverNode(state, enemy, enemyType);
+      enemy.userData.coverCooldown = state.clock.elapsedTime + 2.2;
+    }
+    let desired = distance > enemyType.preferredRange ? toPlayer : flank;
+    const targetCover = enemy.userData.targetCover as CoverNode | null;
+    if (targetCover && enemy.position.distanceTo(targetCover.position) > 1.4) {
+      desired = targetCover.position.clone().sub(enemy.position).normalize();
+    } else if (distance < enemyType.preferredRange * 0.7) {
+      desired = flank;
+    }
     const attempt = enemy.position.clone().add(desired.multiplyScalar(speedFactor * dt));
     if (canMoveTo(state, attempt)) enemy.position.copy(attempt);
     enemy.lookAt(state.player.position.clone().setY(1.4));
@@ -1248,18 +1564,27 @@ function updateGame(state: GameState, dt: number, keys: Record<string, boolean>,
     const lockUntil = enemy.userData.lockedUntil || 0;
     if (lockUntil > state.clock.elapsedTime) {
       // hold shooting pose
-    } else if (distance < 18 && Math.random() < dt * 0.85) {
+    } else if (distance < enemyType.preferredRange + 4 && (enemy.userData.nextShotAt || 0) <= state.clock.elapsedTime) {
       triggerSoldierShootAnimation(state, enemy);
-      state.health = Math.max(0, state.health - (enemy.userData.kind === "Commander" ? 8 : 4));
+      enemy.userData.nextShotAt = state.clock.elapsedTime + THREE.MathUtils.lerp(0.48, 1.18, 1 - enemyType.aggression);
+      playEnemyShotAudio(state);
+      const accuracyFalloff = THREE.MathUtils.clamp(1 - distance / 26, 0.22, 1);
+      if (Math.random() < enemyType.accuracy * accuracyFalloff * getDifficultyScalar(settings) * 0.92) {
+        const damage = enemyType.tacticalRole === "heavy" ? 11 : enemyType.tacticalRole === "commander" ? 9 : 6;
+        state.health = Math.max(0, state.health - damage);
+        state.damagePulse = Math.min(1.4, state.damagePulse + 0.65);
+        state.lastHitAt = state.clock.elapsedTime;
+        setCombatMessage(`${enemyType.name} has you pinned`);
+      }
       if (state.health === 0) {
         state.running = false;
         setGameOver(true);
       }
     } else {
-      switchEnemyAnimation(state, enemy, distance > 10 ? ["run", "walk"] : ["walk", "idle"]);
+      switchEnemyAnimation(state, enemy, distance > enemyType.preferredRange ? ["run", "walk"] : ["walk", "idle"]);
     }
 
-    animateSoldier(enemy, dt, true);
+    animateSoldier(enemy, dt, desired.lengthSq() > 0);
     return true;
   });
 
@@ -1275,6 +1600,9 @@ function updateGame(state: GameState, dt: number, keys: Record<string, boolean>,
 
   if (state.score >= state.wave * 850) {
     state.wave += 1;
+    state.waveBannerUntil = state.clock.elapsedTime + WAVE_BANNER_SECONDS;
+    state.stats.waveStartTime = state.clock.elapsedTime;
+    setCombatMessage(`Wave ${state.wave} incoming`);
   }
 
   setHud((current) => ({
@@ -1284,6 +1612,9 @@ function updateGame(state: GameState, dt: number, keys: Record<string, boolean>,
     score: state.score,
     enemies: state.enemies.length,
     wave: state.wave,
+    objective: getObjectiveText(state),
+    armorStatus: getArmorStatus(state.health),
+    kills: state.stats.kills,
   }));
 }
 
@@ -1293,8 +1624,14 @@ export default function App() {
   const keysRef = useRef<Record<string, boolean>>({});
   const mouseRef = useRef({ dragging: false, lastX: 0, lastY: 0 });
   const animationRef = useRef<number | null>(null);
+  const settingsRef = useRef<Settings>(DEFAULT_SETTINGS);
   const [started, setStarted] = useState(false);
   const [gameOver, setGameOver] = useState(false);
+  const [paused, setPaused] = useState(false);
+  const [pointerLocked, setPointerLocked] = useState(false);
+  const [combatMessage, setCombatMessage] = useState("Move to the floodlit cover and hold the yard.");
+  const [hitMarkerAt, setHitMarkerAt] = useState(0);
+  const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
   const [hud, setHud] = useState<Hud>({
     health: 100,
     ammo: 30,
@@ -1302,6 +1639,9 @@ export default function App() {
     enemies: 0,
     wave: 1,
     modelMode: "procedural 3D fallback",
+    objective: "Secure the outer yard",
+    armorStatus: "Nominal",
+    kills: 0,
   });
   const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
   const [playerName, setPlayerName] = useState("Ronell");
@@ -1350,17 +1690,34 @@ export default function App() {
   function startMission() {
     const state = gameRef.current;
     if (!state) return;
+    ensureAudio(state, settingsRef.current);
     state.running = true;
+    state.paused = false;
     state.health = 100;
     state.ammo = state.maxAmmo;
     state.score = 0;
     state.wave = 1;
+    state.damagePulse = 0;
+    state.recoil = 0;
+    state.velocity.set(0, 0, 0);
+    state.enemySpawnCursor = 0;
+    state.stats = {
+      kills: 0,
+      shotsFired: 0,
+      shotsHit: 0,
+      headshots: 0,
+      waveStartTime: state.clock.elapsedTime,
+    };
+    state.waveBannerUntil = state.clock.elapsedTime + WAVE_BANNER_SECONDS;
     state.player.position.set(0, 0, 8);
     state.enemies.forEach((enemy) => state.scene.remove(enemy));
     state.enemies = [];
     setGameOver(false);
+    setPaused(false);
     setStarted(true);
     setSubmitStatus("");
+    setCombatMessage("Objective: secure the outer yard.");
+    state.renderer.domElement.requestPointerLock?.();
     setHud((current) => ({
       ...current,
       health: 100,
@@ -1368,6 +1725,9 @@ export default function App() {
       score: 0,
       enemies: 0,
       wave: 1,
+      objective: "Secure the outer yard",
+      armorStatus: "Nominal",
+      kills: 0,
     }));
   }
 
@@ -1376,11 +1736,30 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    settingsRef.current = settings;
+    const state = gameRef.current;
+    if (!state?.audio.started) return;
+    if (state.audio.sfx) state.audio.sfx.gain.value = settings.sfx;
+    if (state.audio.music) state.audio.music.gain.value = settings.music;
+  }, [settings]);
+
+  useEffect(() => {
     const down = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        const nextPaused = !paused;
+        setPaused(nextPaused);
+        if (gameRef.current) gameRef.current.paused = nextPaused;
+        if (nextPaused && document.pointerLockElement) {
+          document.exitPointerLock?.();
+        }
+        if (!nextPaused) gameRef.current?.renderer.domElement.requestPointerLock?.();
+        return;
+      }
       keysRef.current[event.key.toLowerCase()] = true;
-      if (event.key === " ") shoot(gameRef.current!);
+      if (event.key === " " && gameRef.current) shoot(gameRef.current, setHitMarkerAt, setCombatMessage);
       if (event.key.toLowerCase() === "r" && gameRef.current) {
         gameRef.current.reload = 1.4;
+        playReloadAudio(gameRef.current);
       }
     };
     const up = (event: KeyboardEvent) => {
@@ -1392,7 +1771,7 @@ export default function App() {
       window.removeEventListener("keydown", down);
       window.removeEventListener("keyup", up);
     };
-  }, []);
+  }, [paused]);
 
   useEffect(() => {
     const container = mountRef.current;
@@ -1413,6 +1792,8 @@ export default function App() {
     };
 
     const onMouseDown = (event: MouseEvent) => {
+      ensureAudio(state, settingsRef.current);
+      state.renderer.domElement.requestPointerLock?.();
       mouseRef.current.dragging = true;
       mouseRef.current.lastX = event.clientX;
       mouseRef.current.lastY = event.clientY;
@@ -1421,27 +1802,33 @@ export default function App() {
       mouseRef.current.dragging = false;
     };
     const onMouseMove = (event: MouseEvent) => {
-      if (!mouseRef.current.dragging) return;
-      const dx = event.clientX - mouseRef.current.lastX;
-      const dy = event.clientY - mouseRef.current.lastY;
+      const pointerActive = document.pointerLockElement === state.renderer.domElement;
+      if (!pointerActive && !mouseRef.current.dragging) return;
+      const dx = pointerActive ? event.movementX : event.clientX - mouseRef.current.lastX;
+      const dy = pointerActive ? event.movementY : event.clientY - mouseRef.current.lastY;
       mouseRef.current.lastX = event.clientX;
       mouseRef.current.lastY = event.clientY;
-      state.yaw -= dx * 0.004;
-      state.pitch -= dy * 0.003;
+      state.yaw -= dx * 0.004 * settingsRef.current.sensitivity;
+      state.pitch -= dy * 0.003 * settingsRef.current.sensitivity;
       state.pitch = THREE.MathUtils.clamp(state.pitch, -0.55, 0.45);
     };
-    const onClick = () => shoot(state);
+    const onClick = () => shoot(state, setHitMarkerAt, setCombatMessage);
+    const onPointerLockChange = () => {
+      const locked = document.pointerLockElement === state.renderer.domElement;
+      setPointerLocked(locked);
+    };
 
     window.addEventListener("resize", onResize);
     state.renderer.domElement.addEventListener("mousedown", onMouseDown);
     window.addEventListener("mouseup", onMouseUp);
     window.addEventListener("mousemove", onMouseMove);
     state.renderer.domElement.addEventListener("click", onClick);
+    document.addEventListener("pointerlockchange", onPointerLockChange);
 
     const animate = () => {
       if (state.disposed) return;
       const dt = Math.min(0.033, state.clock.getDelta());
-      if (state.running) updateGame(state, dt, keysRef.current, setHud, setGameOver);
+      if (state.running && !state.paused) updateGame(state, dt, keysRef.current, settingsRef.current, setHud, setGameOver, setCombatMessage);
       state.mixers.forEach((mixer) => mixer.update(dt));
       updateAtmosphere(state.scene, state.clock.elapsedTime);
       state.renderer.render(state.scene, state.camera);
@@ -1457,6 +1844,7 @@ export default function App() {
       window.removeEventListener("mouseup", onMouseUp);
       window.removeEventListener("mousemove", onMouseMove);
       state.renderer.domElement.removeEventListener("click", onClick);
+      document.removeEventListener("pointerlockchange", onPointerLockChange);
       state.renderer.dispose();
       if (state.renderer.domElement.parentElement) {
         state.renderer.domElement.parentElement.removeChild(state.renderer.domElement);
@@ -1464,14 +1852,28 @@ export default function App() {
     };
   }, []);
 
+  const liveStats = gameRef.current?.stats;
+  const accuracy = liveStats?.shotsFired ? Math.round((liveStats.shotsHit / liveStats.shotsFired) * 100) : 0;
+  const hitMarkerVisible = Date.now() - hitMarkerAt < HITMARKER_SECONDS * 1000;
+  const killFlashVisible = !!gameRef.current && gameRef.current.clock.elapsedTime - gameRef.current.lastKillAt < KILLFLASH_SECONDS;
+  const waveBannerVisible = !!gameRef.current && gameRef.current.clock.elapsedTime < gameRef.current.waveBannerUntil;
+
   return (
     <div className="relative h-screen w-full select-none overflow-hidden bg-black text-white">
       <div ref={mountRef} className="absolute inset-0" />
+
+      {gameRef.current?.damagePulse ? (
+        <div
+          className="pointer-events-none absolute inset-0 z-10 bg-rose-500/15"
+          style={{ opacity: Math.min(0.8, gameRef.current.damagePulse) }}
+        />
+      ) : null}
 
       <div className="pointer-events-none absolute left-4 top-4 z-20 rounded-2xl border border-cyan-300/40 bg-black/60 p-4 shadow-2xl backdrop-blur">
         <div className="text-xs tracking-[0.25em] text-cyan-200">BRADLEY&apos;S DARK SECTOR</div>
         <div className="mt-1 text-2xl font-black">WAVE {hud.wave}</div>
         <div className="text-sm text-slate-300">Hostiles: {hud.enemies}</div>
+        <div className="mt-2 text-sm text-cyan-100">{hud.objective}</div>
         <div className="text-xs text-slate-400">Enemy models: {hud.modelMode}</div>
       </div>
 
@@ -1479,21 +1881,62 @@ export default function App() {
         <div className="text-xs tracking-[0.25em] text-slate-300">M4A1 CARBINE</div>
         <div className="mt-1 text-4xl font-black text-cyan-200">{hud.ammo}</div>
         <div className="text-sm text-slate-300">Score {hud.score}</div>
+        <div className="text-xs text-slate-400">Accuracy {accuracy}%</div>
       </div>
 
       <div className="pointer-events-none absolute bottom-5 left-5 right-5 z-20 flex items-end justify-between gap-4">
         <div className="rounded-2xl border border-emerald-300/40 bg-black/60 p-4 shadow-2xl backdrop-blur">
           <div className="text-xs tracking-[0.25em] text-emerald-200">ARMOR</div>
           <div className="text-4xl font-black">{hud.health}%</div>
+          <div className="text-xs text-emerald-100">{hud.armorStatus}</div>
         </div>
         <div className="hidden rounded-2xl border border-slate-300/30 bg-black/60 p-4 text-center shadow-2xl backdrop-blur md:block">
-          <div className="text-sm text-slate-200">WASD move • Shift sprint • Drag mouse aim • Click/Space fire • R reload</div>
+          <div className="text-sm text-slate-200">WASD move • Shift sprint • Mouse look • Click/Space fire • R reload • Esc pause</div>
+        </div>
+        <div className="rounded-2xl border border-amber-300/30 bg-black/60 p-4 text-right shadow-2xl backdrop-blur">
+          <div className="text-xs tracking-[0.25em] text-amber-200">FIELD DATA</div>
+          <div className="text-2xl font-black">{hud.kills}</div>
+          <div className="text-xs text-slate-300">Confirmed kills</div>
         </div>
       </div>
 
       <div className="pointer-events-none absolute left-1/2 top-1/2 z-20 h-10 w-10 -translate-x-1/2 -translate-y-1/2">
-        <div className="absolute left-0 top-1/2 h-0.5 w-10 -translate-y-1/2 bg-white/80" />
-        <div className="absolute left-1/2 top-0 h-10 w-0.5 -translate-x-1/2 bg-white/80" />
+        <div className={`absolute left-0 top-1/2 h-0.5 w-10 -translate-y-1/2 ${hitMarkerVisible ? "bg-rose-300" : "bg-white/80"}`} />
+        <div className={`absolute left-1/2 top-0 h-10 w-0.5 -translate-x-1/2 ${hitMarkerVisible ? "bg-rose-300" : "bg-white/80"}`} />
+        {hitMarkerVisible ? (
+          <>
+            <div className="absolute left-1 top-1 h-0.5 w-3 rotate-45 bg-rose-300" />
+            <div className="absolute right-1 top-1 h-0.5 w-3 -rotate-45 bg-rose-300" />
+            <div className="absolute bottom-1 left-1 h-0.5 w-3 -rotate-45 bg-rose-300" />
+            <div className="absolute bottom-1 right-1 h-0.5 w-3 rotate-45 bg-rose-300" />
+          </>
+        ) : null}
+      </div>
+
+      {combatMessage ? (
+        <div className="pointer-events-none absolute left-1/2 top-20 z-20 -translate-x-1/2 rounded-full border border-cyan-300/30 bg-black/55 px-5 py-2 text-sm text-cyan-100 shadow-2xl backdrop-blur">
+          {combatMessage}
+        </div>
+      ) : null}
+
+      {waveBannerVisible ? (
+        <div className="pointer-events-none absolute left-1/2 top-32 z-20 -translate-x-1/2 rounded-3xl border border-white/10 bg-black/55 px-8 py-4 text-center shadow-2xl backdrop-blur">
+          <div className="text-xs tracking-[0.3em] text-slate-400">TACTICAL UPDATE</div>
+          <div className="mt-1 text-3xl font-black text-cyan-200">WAVE {hud.wave}</div>
+        </div>
+      ) : null}
+
+      {killFlashVisible ? (
+        <div className="pointer-events-none absolute left-1/2 top-[58%] z-20 -translate-x-1/2 rounded-full bg-rose-400/20 px-4 py-2 text-sm font-semibold text-rose-100">
+          Confirmed kill
+        </div>
+      ) : null}
+
+      <div className="pointer-events-none absolute left-4 top-36 z-20 rounded-2xl border border-white/10 bg-black/45 p-4 text-sm shadow-xl backdrop-blur">
+        <div className="text-xs tracking-[0.25em] text-slate-400">MISSION FEED</div>
+        <div className="mt-2 text-slate-100">Pointer Lock: {pointerLocked ? "Engaged" : "Tap game view"}</div>
+        <div className="text-slate-300">Headshots: {liveStats?.headshots ?? 0}</div>
+        <div className="text-slate-300">Shots landed: {liveStats?.shotsHit ?? 0}/{liveStats?.shotsFired ?? 0}</div>
       </div>
 
       {!started && !gameOver ? (
@@ -1504,9 +1947,8 @@ export default function App() {
             Dark Sector
           </h1>
           <p className="mt-5 max-w-2xl text-lg text-cyan-100">
-            Fight through a burning compound with real 3D soldier support when model files exist in
-            <code className="mx-1 rounded bg-white/10 px-2 py-1 text-sm">/public/models/</code>
-            and strong procedural fallback soldiers when they do not.
+            Defend a collapsing compound, clear tactical lanes, and survive escalating assault waves with improved combat
+            read, live leaderboard tracking, and a more grounded FPS feel.
           </p>
           <button
             type="button"
@@ -1518,11 +1960,86 @@ export default function App() {
         </div>
       ) : null}
 
+      {paused && started && !gameOver ? (
+        <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/72 p-6 backdrop-blur-sm">
+          <div className="w-full max-w-2xl rounded-3xl border border-cyan-300/20 bg-slate-950/88 p-6">
+            <div className="text-xs tracking-[0.3em] text-cyan-200">MISSION PAUSED</div>
+            <div className="mt-2 text-4xl font-black">Tactical Settings</div>
+            <div className="mt-6 grid gap-4 md:grid-cols-2">
+              <label className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                <div className="text-sm text-slate-300">Look Sensitivity</div>
+                <input
+                  type="range"
+                  min="0.4"
+                  max="1.8"
+                  step="0.05"
+                  value={settings.sensitivity}
+                  onChange={(event) => setSettings((current) => ({ ...current, sensitivity: Number(event.target.value) }))}
+                  className="mt-3 w-full"
+                />
+              </label>
+              <label className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                <div className="text-sm text-slate-300">Music</div>
+                <input
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.05"
+                  value={settings.music}
+                  onChange={(event) => setSettings((current) => ({ ...current, music: Number(event.target.value) }))}
+                  className="mt-3 w-full"
+                />
+              </label>
+              <label className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                <div className="text-sm text-slate-300">SFX</div>
+                <input
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.05"
+                  value={settings.sfx}
+                  onChange={(event) => setSettings((current) => ({ ...current, sfx: Number(event.target.value) }))}
+                  className="mt-3 w-full"
+                />
+              </label>
+              <label className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                <div className="text-sm text-slate-300">Difficulty</div>
+                <select
+                  value={settings.difficulty}
+                  onChange={(event) => setSettings((current) => ({ ...current, difficulty: event.target.value as Settings["difficulty"] }))}
+                  className="mt-3 w-full rounded-xl bg-slate-900 px-3 py-2 text-white"
+                >
+                  <option value="operator">Operator</option>
+                  <option value="veteran">Veteran</option>
+                  <option value="blackout">Blackout</option>
+                </select>
+              </label>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setPaused(false);
+                if (gameRef.current) gameRef.current.paused = false;
+                gameRef.current?.renderer.domElement.requestPointerLock?.();
+              }}
+              className="mt-6 rounded-full bg-cyan-300 px-6 py-3 font-black text-slate-950"
+            >
+              RETURN TO FIGHT
+            </button>
+          </div>
+        </div>
+      ) : null}
+
       {gameOver ? (
         <div className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-black/85 p-6 text-center">
           <h2 className="text-5xl font-black text-rose-400 md:text-7xl">COMPOUND OVERRUN</h2>
           <p className="mt-4 text-cyan-100">Final Score: {hud.score}</p>
           <p className="mt-2 text-sm text-slate-300">Wave reached: {hud.wave}</p>
+          <div className="mt-4 flex flex-wrap items-center justify-center gap-3 text-sm text-slate-300">
+            <span className="rounded-full border border-white/10 px-3 py-1">Kills {liveStats?.kills ?? 0}</span>
+            <span className="rounded-full border border-white/10 px-3 py-1">Accuracy {accuracy}%</span>
+            <span className="rounded-full border border-white/10 px-3 py-1">Headshots {liveStats?.headshots ?? 0}</span>
+          </div>
           <div className="mt-6 w-full max-w-md rounded-3xl border border-cyan-400/20 bg-black/60 p-4 text-left">
             <div className="text-xs tracking-[0.25em] text-cyan-200">LEADERBOARD ENTRY</div>
             <div className="mt-3 flex flex-col gap-3 sm:flex-row">
