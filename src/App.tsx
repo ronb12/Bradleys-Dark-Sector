@@ -447,6 +447,11 @@ function applyEnemyVariant(enemy: THREE.Group, enemyType: EnemyType) {
   enemy.userData.nextShotAt = 0;
   enemy.userData.coverCooldown = 0;
   enemy.userData.targetCover = null;
+  const accent =
+    enemyType.tacticalRole === "marksman" ? 0x60a5fa :
+    enemyType.tacticalRole === "heavy" ? 0xf97316 :
+    enemyType.tacticalRole === "commander" ? 0xf43f5e :
+    0x22d3ee;
   enemy.traverse((child) => {
     if (!(child instanceof THREE.Mesh)) return;
     const materials = Array.isArray(child.material) ? child.material : [child.material];
@@ -461,12 +466,22 @@ function applyEnemyVariant(enemy: THREE.Group, enemyType: EnemyType) {
   });
 
   const head = findRigNode<THREE.Bone>(enemy, ["mixamorig:Head", "Head"]);
-  if (head && !head.getObjectByName("DarkSectorEnemyBeacon")) {
-    const beacon = createEnemyBeacon(
-      enemyType.tacticalRole === "marksman" ? 0x7dd3fc : enemyType.tacticalRole === "heavy" ? 0xff8a3d : 0xff4d4d
-    );
+  const beaconParent = head || enemy;
+  if (!beaconParent.getObjectByName("DarkSectorEnemyBeacon")) {
+    const beacon = createEnemyBeacon(accent);
     if (enemyType.tacticalRole === "heavy") beacon.scale.setScalar(1.2);
-    head.add(beacon);
+    if (!head) beacon.position.set(0, 2.42, -0.32);
+    beaconParent.add(beacon);
+  }
+
+  if (!enemy.getObjectByName("DarkSectorRolePlate")) {
+    const rolePlate = new THREE.Mesh(
+      new THREE.BoxGeometry(0.54, 0.08, 0.035),
+      new THREE.MeshBasicMaterial({ color: accent })
+    );
+    rolePlate.name = "DarkSectorRolePlate";
+    rolePlate.position.set(0, 1.88, -0.43);
+    enemy.add(rolePlate);
   }
 }
 
@@ -624,8 +639,10 @@ function makeRealisticProceduralSoldier(name: string, color: number, enemy = fal
   group.name = name;
 
   const uniform = makeMaterial(color, 0.88, 0.05);
-  const vest = makeMaterial(enemy ? 0x2b1717 : 0x202820, 0.9, 0.05);
+  const vest = makeMaterial(enemy ? 0x1b2419 : 0x202820, 0.9, 0.05);
   const black = makeMaterial(0x080808, 0.55, 0.65);
+  const armor = makeMaterial(enemy ? 0x0f1510 : 0x111827, 0.78, 0.22);
+  const enemyAccent = new THREE.MeshBasicMaterial({ color: enemy ? 0xff3b30 : 0x38bdf8 });
   const skin = makeMaterial(enemy ? 0xa36a4c : 0x8f5c3f, 0.78, 0.02);
   const darkSkin = makeMaterial(enemy ? 0x8d553b : 0x76452f, 0.8, 0.01);
   const faceDark = new THREE.MeshBasicMaterial({ color: 0x080808 });
@@ -643,6 +660,11 @@ function makeRealisticProceduralSoldier(name: string, color: number, enemy = fal
   const plate = new THREE.Mesh(new THREE.BoxGeometry(0.72, 0.72, 0.14), vest);
   plate.position.set(0, 1.55, -0.28);
   group.add(plate);
+
+  const chestArmor = new THREE.Mesh(new THREE.BoxGeometry(0.82, 0.86, 0.18), armor);
+  chestArmor.name = "ChestArmor";
+  chestArmor.position.set(0, 1.56, -0.33);
+  group.add(chestArmor);
 
   const pouchMat = makeMaterial(0x11140f, 0.8, 0.15);
   for (let i = 0; i < 4; i += 1) {
@@ -710,15 +732,22 @@ function makeRealisticProceduralSoldier(name: string, color: number, enemy = fal
 
   const helmet = new THREE.Mesh(
     new THREE.SphereGeometry(0.3, 28, 14, 0, Math.PI * 2, 0, Math.PI / 2),
-    uniform
+    armor
   );
+  helmet.name = "CombatHelmet";
   helmet.position.y = 2.38;
-  helmet.scale.set(1.12, 1, 1.04);
+  helmet.scale.set(1.24, 0.9, 1.12);
   group.add(helmet);
 
-  const helmetBrim = new THREE.Mesh(new THREE.BoxGeometry(0.48, 0.04, 0.16), uniform);
-  helmetBrim.position.set(0, 2.23, -0.23);
+  const helmetBrim = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.055, 0.2), armor);
+  helmetBrim.name = "HelmetBrim";
+  helmetBrim.position.set(0, 2.24, -0.25);
   group.add(helmetBrim);
+
+  const visor = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.08, 0.025), enemyAccent);
+  visor.name = "CombatVisor";
+  visor.position.set(0, 2.27, -0.335);
+  group.add(visor);
 
   const backpack = new THREE.Mesh(new THREE.BoxGeometry(0.52, 0.78, 0.22), black);
   backpack.position.set(0, 1.52, 0.33);
@@ -745,10 +774,36 @@ function makeRealisticProceduralSoldier(name: string, color: number, enemy = fal
     return limb;
   };
 
-  makeLimb(-0.19, 0.47, 0, 1, 0.72, 0.95, uniform);
-  makeLimb(0.19, 0.47, 0, 1, 0.72, 0.95, uniform);
-  makeLimb(-0.54, 1.55, -0.02, 1, 0.63, 0.92, uniform);
-  makeLimb(0.54, 1.55, -0.02, 1, 0.63, 0.92, uniform);
+  const leftLeg = makeLimb(-0.2, 0.48, 0.02, 1.08, 0.72, 0.98, uniform);
+  leftLeg.name = "LeftLeg";
+  leftLeg.rotation.z = 0.04;
+  const rightLeg = makeLimb(0.2, 0.48, 0.02, 1.08, 0.72, 0.98, uniform);
+  rightLeg.name = "RightLeg";
+  rightLeg.rotation.z = -0.04;
+  const leftArm = makeLimb(-0.47, 1.55, -0.12, 1, 0.6, 0.92, uniform);
+  leftArm.name = "LeftArm";
+  leftArm.rotation.set(0.35, 0.05, -0.82);
+  const rightArm = makeLimb(0.47, 1.55, -0.12, 1, 0.6, 0.92, uniform);
+  rightArm.name = "RightArm";
+  rightArm.rotation.set(0.3, -0.05, 0.82);
+
+  const leftShoulder = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.16, 0.24), armor);
+  leftShoulder.name = "LeftShoulderPad";
+  leftShoulder.position.set(-0.43, 1.88, -0.02);
+  group.add(leftShoulder);
+  const rightShoulder = leftShoulder.clone();
+  rightShoulder.name = "RightShoulderPad";
+  rightShoulder.position.x = 0.43;
+  group.add(rightShoulder);
+
+  const leftKnee = new THREE.Mesh(new THREE.BoxGeometry(0.21, 0.12, 0.08), armor);
+  leftKnee.name = "LeftKneePad";
+  leftKnee.position.set(-0.2, 0.45, -0.15);
+  group.add(leftKnee);
+  const rightKnee = leftKnee.clone();
+  rightKnee.name = "RightKneePad";
+  rightKnee.position.x = 0.2;
+  group.add(rightKnee);
 
   const lBoot = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.16, 0.44), black);
   lBoot.position.set(-0.19, 0.05, 0.08);
@@ -778,11 +833,17 @@ function makeRealisticProceduralSoldier(name: string, color: number, enemy = fal
   stock.rotation.z = -0.3;
   rifle.add(stock);
   rifle.position.set(0.08, 1.54, -0.08);
-  rifle.rotation.z = -0.18;
+  rifle.rotation.set(-0.06, 0, -0.18);
+  rifle.name = "Rifle";
   group.add(rifle);
 
   enableShadows(group);
   group.userData.baseY = 0;
+  group.userData.leftLeg = leftLeg;
+  group.userData.rightLeg = rightLeg;
+  group.userData.leftArm = leftArm;
+  group.userData.rightArm = rightArm;
+  group.userData.rifle = rifle;
   return group;
 }
 
@@ -828,9 +889,7 @@ function spawnEnemyFromTemplate(
   x: number,
   z: number
 ) {
-  const enemy = state.enemyTemplate
-    ? (cloneSkeleton(state.enemyTemplate) as THREE.Group)
-    : makeRealisticProceduralSoldier(enemyType.name, enemyType.color, true);
+  const enemy = makeRealisticProceduralSoldier(enemyType.name, enemyType.color, true);
   enemy.position.set(x, 0, z);
   enemy.userData.hp = enemyType.hp;
   enemy.userData.speed = enemyType.speed;
@@ -839,18 +898,7 @@ function spawnEnemyFromTemplate(
   enemy.userData.kind = enemyType.name;
   enemy.userData.lockedUntil = 0;
   enemy.userData.nextShotAt = state.clock.elapsedTime + 1.2 + Math.random() * 0.8;
-  applyCombatRestPose(enemy);
   applyEnemyVariant(enemy, enemyType);
-  if (state.enemyTemplate) {
-    enemy.traverse((child) => {
-      if (child instanceof THREE.Mesh) {
-        child.castShadow = true;
-        child.receiveShadow = true;
-      }
-    });
-    enemy.userData.animationClips = state.enemyAnimations;
-    switchEnemyAnimation(state, enemy, ["idle", "walk", "run"], true);
-  }
   state.scene.add(enemy);
   state.enemies.push(enemy);
 }
@@ -891,52 +939,11 @@ function setupFbxModelAsEnemyTemplate(state: GameState, fbxModel: THREE.Group, l
 }
 
 async function loadEnemyModel(state: GameState, setHud: React.Dispatch<React.SetStateAction<Hud>>) {
-  const fbxLoader = new FBXLoader();
-  const gltfLoader = new GLTFLoader();
-
-  const setMode = (modelMode: string) => {
-    setHud((current) => ({ ...current, modelMode }));
-  };
-
-  try {
-    if (SOLDIER_MODEL_URL) {
-      const gltf = await gltfLoader.loadAsync(SOLDIER_MODEL_URL);
-      const model = gltf.scene;
-      model.scale.setScalar(1.08);
-      model.rotation.y = Math.PI;
-      enableShadows(model);
-      state.enemyTemplate = model;
-      state.enemyAnimations = gltf.animations || [];
-      state.enemyModelLoaded = true;
-      setMode("Mixamo GLB soldier");
-      return;
-    }
-  } catch (error) {
-    console.warn("GLB model unavailable, trying FBX.", error);
-  }
-
-  try {
-    const fbxModel = await fbxLoader.loadAsync(FBX_MODEL_URL);
-    setupFbxModelAsEnemyTemplate(state, fbxModel as THREE.Group, "Real FBX soldier.fbx loaded");
-    setMode("FBX soldier + combat clips");
-    return;
-  } catch (error) {
-    console.warn("Primary FBX model unavailable, trying idle fallback.", error);
-  }
-
-  try {
-    const idleFbxModel = await fbxLoader.loadAsync(FBX_IDLE_MODEL_FALLBACK_URL);
-    setupFbxModelAsEnemyTemplate(state, idleFbxModel as THREE.Group, "Real FBX idle.fbx model loaded");
-    setMode("FBX idle soldier + combat clips");
-    return;
-  } catch (error) {
-    console.warn("FBX fallback model unavailable, using procedural soldiers.", error);
-  }
-
   state.enemyTemplate = null;
   state.enemyAnimations = [];
-  state.enemyModelLoaded = false;
-  setMode("procedural 3D fallback");
+  state.enemyModelLoaded = true;
+  state.fbxModeLoaded = false;
+  setHud((current) => ({ ...current, modelMode: "tactical soldier models" }));
 }
 
 function makeBox(width: number, height: number, depth: number, color: number) {
@@ -1335,8 +1342,29 @@ function canMoveTo(state: GameState, position: THREE.Vector3) {
 }
 
 function animateSoldier(group: THREE.Group, dt: number, moving: boolean) {
-  const sway = moving ? Math.sin(Date.now() * 0.01) * 0.04 : Math.sin(Date.now() * 0.004) * 0.008;
+  const time = Date.now() * 0.01;
+  const stride = Math.sin(time);
+  const sway = moving ? stride * 0.04 : Math.sin(Date.now() * 0.004) * 0.008;
   group.position.y = (group.userData.baseY || 0) + sway;
+  const leftLeg = group.userData.leftLeg as THREE.Mesh | undefined;
+  const rightLeg = group.userData.rightLeg as THREE.Mesh | undefined;
+  const leftArm = group.userData.leftArm as THREE.Mesh | undefined;
+  const rightArm = group.userData.rightArm as THREE.Mesh | undefined;
+  const rifle = group.userData.rifle as THREE.Group | undefined;
+  if (leftLeg && rightLeg) {
+    leftLeg.rotation.x = moving ? stride * 0.34 : 0.04;
+    rightLeg.rotation.x = moving ? -stride * 0.34 : -0.04;
+  }
+  if (leftArm && rightArm) {
+    leftArm.rotation.z = -0.82 + Math.sin(time * 0.7) * 0.035;
+    rightArm.rotation.z = 0.82 - Math.sin(time * 0.7) * 0.035;
+    leftArm.rotation.x = 0.35 + (moving ? -stride * 0.05 : 0);
+    rightArm.rotation.x = 0.3 + (moving ? stride * 0.05 : 0);
+  }
+  if (rifle) {
+    rifle.rotation.x = -0.06 + Math.sin(time * 0.9) * 0.018;
+    rifle.position.y = 1.54 + Math.sin(time * 0.8) * 0.015;
+  }
 }
 
 function getArmorStatus(health: number) {
