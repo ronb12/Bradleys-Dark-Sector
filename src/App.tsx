@@ -1864,13 +1864,15 @@ export default function App() {
     <div className="relative h-screen w-full select-none overflow-hidden bg-black text-white">
       <div ref={mountRef} className="absolute inset-0" />
 
-      {gameRef.current?.damagePulse ? (
+      {started && gameRef.current?.damagePulse ? (
         <div
           className="pointer-events-none absolute inset-0 z-10 bg-rose-500/15"
           style={{ opacity: Math.min(0.8, gameRef.current.damagePulse) }}
         />
       ) : null}
 
+      {started ? (
+        <>
       <div className="pointer-events-none absolute left-4 top-4 z-20 rounded-2xl border border-cyan-300/40 bg-black/60 p-4 shadow-2xl backdrop-blur">
         <div className="text-xs tracking-[0.25em] text-cyan-200">BRADLEY&apos;S DARK SECTOR</div>
         <div className="mt-1 text-2xl font-black">WAVE {hud.wave}</div>
@@ -1940,6 +1942,8 @@ export default function App() {
         <div className="text-slate-300">Headshots: {liveStats?.headshots ?? 0}</div>
         <div className="text-slate-300">Shots landed: {liveStats?.shotsHit ?? 0}/{liveStats?.shotsFired ?? 0}</div>
       </div>
+        </>
+      ) : null}
 
       {!started && !gameOver ? (
         <div className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-black/80 p-6 text-center backdrop-blur-sm">
