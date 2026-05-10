@@ -838,6 +838,8 @@ function spawnEnemyFromTemplate(
   enemy.userData.flank = Math.random() > 0.5 ? 1 : -1;
   enemy.userData.kind = enemyType.name;
   enemy.userData.lockedUntil = 0;
+  enemy.userData.nextShotAt = state.clock.elapsedTime + 1.2 + Math.random() * 0.8;
+  applyCombatRestPose(enemy);
   applyEnemyVariant(enemy, enemyType);
   if (state.enemyTemplate) {
     enemy.traverse((child) => {
@@ -1405,7 +1407,7 @@ function shoot(state: GameState, setHitMarker?: React.Dispatch<React.SetStateAct
   });
 
   if (closestHit) {
-    const damage = closestHit.angle < 0.04 ? 52 : 38;
+    const damage = closestHit.angle < 0.04 ? 70 : 42;
     closestHit.enemy.userData.hp -= damage;
     state.stats.shotsHit += 1;
     state.lastHitAt = state.clock.elapsedTime;
@@ -1570,7 +1572,7 @@ function updateGame(
       playEnemyShotAudio(state);
       const accuracyFalloff = THREE.MathUtils.clamp(1 - distance / 26, 0.22, 1);
       if (Math.random() < enemyType.accuracy * accuracyFalloff * getDifficultyScalar(settings) * 0.92) {
-        const damage = enemyType.tacticalRole === "heavy" ? 11 : enemyType.tacticalRole === "commander" ? 9 : 6;
+        const damage = enemyType.tacticalRole === "heavy" ? 8 : enemyType.tacticalRole === "commander" ? 7 : 5;
         state.health = Math.max(0, state.health - damage);
         state.damagePulse = Math.min(1.4, state.damagePulse + 0.65);
         state.lastHitAt = state.clock.elapsedTime;
