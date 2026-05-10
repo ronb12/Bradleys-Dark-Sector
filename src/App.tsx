@@ -80,6 +80,147 @@ const FBX_ANIMATION_URLS: Record<string, string> = {
 
 const SHOOT_ANIMATION_LOCK_SECONDS = 0.32;
 
+type BoneSnapshot = {
+  quaternion: THREE.Quaternion;
+  position: THREE.Vector3;
+};
+
+function buildMixamoCombatClips(model: THREE.Group) {
+  const rest = new Map<string, BoneSnapshot>();
+  model.traverse((child) => {
+    if ((child as THREE.Bone).isBone) {
+      rest.set(child.name, {
+        quaternion: child.quaternion.clone(),
+        position: child.position.clone(),
+      });
+    }
+  });
+
+  const requiredBones = [
+    "mixamorig:Hips",
+    "mixamorig:Spine",
+    "mixamorig:Spine1",
+    "mixamorig:LeftUpLeg",
+    "mixamorig:RightUpLeg",
+    "mixamorig:LeftLeg",
+    "mixamorig:RightLeg",
+    "mixamorig:LeftArm",
+    "mixamorig:RightArm",
+    "mixamorig:LeftForeArm",
+    "mixamorig:RightForeArm",
+    "mixamorig:LeftShoulder",
+    "mixamorig:RightShoulder",
+    "mixamorig:Neck",
+    "mixamorig:Head",
+  ];
+  if (!requiredBones.every((name) => rest.has(name))) return [];
+
+  const clipFromDefinition = (
+    name: string,
+    duration: number,
+    loopOffsets: Record<string, Array<[number, number, number, number]>>,
+    hipsYOffset?: Array<[number, number]>
+  ) => {
+    const tracks: THREE.KeyframeTrack[] = [];
+    Object.entries(loopOffsets).forEach(([boneName, frames]) => {
+      const base = rest.get(boneName);
+      if (!base) return;
+      const times: number[] = [];
+      const values: number[] = [];
+      frames.forEach(([time, x, y, z]) => {
+        const offset = new THREE.Quaternion().setFromEuler(new THREE.Euler(x, y, z, "XYZ"));
+        const quat = base.quaternion.clone().multiply(offset);
+        times.push(time);
+        values.push(quat.x, quat.y, quat.z, quat.w);
+      });
+      tracks.push(new THREE.QuaternionKeyframeTrack(`${boneName}.quaternion`, times, values));
+    });
+    if (hipsYOffset?.length) {
+      const base = rest.get("mixamorig:Hips");
+      if (base) {
+        const times: number[] = [];
+        const values: number[] = [];
+        hipsYOffset.forEach(([time, offset]) => {
+          times.push(time);
+          values.push(base.position.x, base.position.y + offset, base.position.z);
+        });
+        tracks.push(new THREE.VectorKeyframeTrack("mixamorig:Hips.position", times, values));
+      }
+    }
+    return new THREE.AnimationClip(name, duration, tracks);
+  };
+
+  const walk = clipFromDefinition(
+    "walk",
+    1,
+    {
+      "mixamorig:LeftUpLeg": [[0, 0.55, 0, 0], [0.5, -0.55, 0, 0], [1, 0.55, 0, 0]],
+      "mixamorig:RightUpLeg": [[0, -0.55, 0, 0], [0.5, 0.55, 0, 0], [1, -0.55, 0, 0]],
+      "mixamorig:LeftLeg": [[0, -0.32, 0, 0], [0.5, 0.48, 0, 0], [1, -0.32, 0, 0]],
+      "mixamorig:RightLeg": [[0, 0.48, 0, 0], [0.5, -0.32, 0, 0], [1, 0.48, 0, 0]],
+      "mixamorig:LeftArm": [[0, -0.28, 0, -0.1], [0.5, 0.24, 0, 0.08], [1, -0.28, 0, -0.1]],
+      "mixamorig:RightArm": [[0, 0.24, 0, 0.08], [0.5, -0.28, 0, -0.1], [1, 0.24, 0, 0.08]],
+      "mixamorig:LeftForeArm": [[0, -0.22, 0, 0], [0.5, -0.08, 0, 0], [1, -0.22, 0, 0]],
+      "mixamorig:RightForeArm": [[0, -0.08, 0, 0], [0.5, -0.22, 0, 0], [1, -0.08, 0, 0]],
+      "mixamorig:Spine": [[0, 0.04, 0.05, 0], [0.5, -0.04, -0.05, 0], [1, 0.04, 0.05, 0]],
+      "mixamorig:Spine1": [[0, -0.03, 0.04, 0], [0.5, 0.03, -0.04, 0], [1, -0.03, 0.04, 0]],
+      "mixamorig:Head": [[0, 0.03, 0.02, 0], [0.5, -0.03, -0.02, 0], [1, 0.03, 0.02, 0]],
+    },
+    [[0, 0.02], [0.5, -0.04], [1, 0.02]]
+  );
+
+  const run = clipFromDefinition(
+    "run",
+    0.72,
+    {
+      "mixamorig:LeftUpLeg": [[0, 0.92, 0, 0], [0.36, -0.92, 0, 0], [0.72, 0.92, 0, 0]],
+      "mixamorig:RightUpLeg": [[0, -0.92, 0, 0], [0.36, 0.92, 0, 0], [0.72, -0.92, 0, 0]],
+      "mixamorig:LeftLeg": [[0, -0.22, 0, 0], [0.36, 0.86, 0, 0], [0.72, -0.22, 0, 0]],
+      "mixamorig:RightLeg": [[0, 0.86, 0, 0], [0.36, -0.22, 0, 0], [0.72, 0.86, 0, 0]],
+      "mixamorig:LeftArm": [[0, -0.48, 0, -0.18], [0.36, 0.42, 0, 0.16], [0.72, -0.48, 0, -0.18]],
+      "mixamorig:RightArm": [[0, 0.42, 0, 0.16], [0.36, -0.48, 0, -0.18], [0.72, 0.42, 0, 0.16]],
+      "mixamorig:LeftForeArm": [[0, -0.34, 0, 0], [0.36, -0.18, 0, 0], [0.72, -0.34, 0, 0]],
+      "mixamorig:RightForeArm": [[0, -0.18, 0, 0], [0.36, -0.34, 0, 0], [0.72, -0.18, 0, 0]],
+      "mixamorig:Spine": [[0, 0.07, 0.08, 0], [0.36, -0.07, -0.08, 0], [0.72, 0.07, 0.08, 0]],
+      "mixamorig:Spine1": [[0, -0.05, 0.06, 0], [0.36, 0.05, -0.06, 0], [0.72, -0.05, 0.06, 0]],
+      "mixamorig:Neck": [[0, 0.03, 0.03, 0], [0.36, -0.03, -0.03, 0], [0.72, 0.03, 0.03, 0]],
+    },
+    [[0, 0.05], [0.36, -0.09], [0.72, 0.05]]
+  );
+
+  const shoot = clipFromDefinition(
+    "shoot",
+    0.42,
+    {
+      "mixamorig:Spine": [[0, 0, 0, 0], [0.1, -0.08, 0.1, 0], [0.22, -0.12, 0.15, 0], [0.42, 0, 0, 0]],
+      "mixamorig:Spine1": [[0, 0, 0, 0], [0.1, -0.1, 0.12, 0], [0.22, -0.16, 0.16, 0], [0.42, 0, 0, 0]],
+      "mixamorig:LeftShoulder": [[0, 0, 0, 0], [0.1, -0.08, 0.08, 0.06], [0.22, -0.14, 0.12, 0.08], [0.42, 0, 0, 0]],
+      "mixamorig:RightShoulder": [[0, 0, 0, 0], [0.1, -0.04, -0.06, -0.06], [0.22, -0.08, -0.1, -0.08], [0.42, 0, 0, 0]],
+      "mixamorig:LeftArm": [[0, -0.18, 0.02, -0.08], [0.1, -0.46, 0.1, -0.2], [0.22, -0.56, 0.12, -0.24], [0.42, -0.18, 0.02, -0.08]],
+      "mixamorig:RightArm": [[0, -0.12, -0.06, 0.08], [0.1, -0.34, -0.16, 0.12], [0.22, -0.42, -0.18, 0.14], [0.42, -0.12, -0.06, 0.08]],
+      "mixamorig:LeftForeArm": [[0, -0.45, 0, 0], [0.1, -0.95, 0, 0], [0.22, -1.15, 0.04, 0], [0.42, -0.45, 0, 0]],
+      "mixamorig:RightForeArm": [[0, -0.28, 0, 0], [0.1, -0.58, 0, 0], [0.22, -0.7, -0.02, 0], [0.42, -0.28, 0, 0]],
+      "mixamorig:Head": [[0, 0, 0, 0], [0.1, -0.02, 0.03, 0], [0.22, -0.03, 0.04, 0], [0.42, 0, 0, 0]],
+    },
+    [[0, 0], [0.1, -0.01], [0.22, -0.025], [0.42, 0]]
+  );
+
+  const idle = clipFromDefinition(
+    "idle",
+    1.6,
+    {
+      "mixamorig:Spine": [[0, 0.01, 0.02, 0], [0.8, -0.01, -0.02, 0], [1.6, 0.01, 0.02, 0]],
+      "mixamorig:Spine1": [[0, -0.01, -0.01, 0], [0.8, 0.01, 0.01, 0], [1.6, -0.01, -0.01, 0]],
+      "mixamorig:Head": [[0, 0.01, 0.01, 0], [0.8, -0.01, -0.01, 0], [1.6, 0.01, 0.01, 0]],
+      "mixamorig:LeftArm": [[0, -0.08, 0, -0.02], [0.8, -0.06, 0, 0.02], [1.6, -0.08, 0, -0.02]],
+      "mixamorig:RightArm": [[0, -0.06, 0, 0.02], [0.8, -0.08, 0, -0.02], [1.6, -0.06, 0, 0.02]],
+    },
+    [[0, 0], [0.8, 0.015], [1.6, 0]]
+  );
+
+  return [idle, walk, run, shoot].filter(Boolean);
+}
+
 function makeMaterial(color: number, roughness = 0.8, metalness = 0.08) {
   return new THREE.MeshStandardMaterial({ color, roughness, metalness });
 }
@@ -336,7 +477,7 @@ function setupFbxModelAsEnemyTemplate(state: GameState, fbxModel: THREE.Group, l
     }
   });
   state.enemyTemplate = fbxModel;
-  state.enemyAnimations = [];
+  state.enemyAnimations = buildMixamoCombatClips(fbxModel);
   state.fbxModeLoaded = true;
   state.enemyModelLoaded = true;
   state.enemies.forEach((enemy) => {
@@ -388,7 +529,7 @@ async function loadEnemyModel(state: GameState, setHud: React.Dispatch<React.Set
   try {
     const fbxModel = await fbxLoader.loadAsync(FBX_MODEL_URL);
     setupFbxModelAsEnemyTemplate(state, fbxModel as THREE.Group, "Real FBX soldier.fbx loaded");
-    setMode("FBX soldier");
+    setMode("FBX soldier + combat clips");
     return;
   } catch (error) {
     console.warn("Primary FBX model unavailable, trying idle fallback.", error);
@@ -397,22 +538,10 @@ async function loadEnemyModel(state: GameState, setHud: React.Dispatch<React.Set
   try {
     const idleFbxModel = await fbxLoader.loadAsync(FBX_IDLE_MODEL_FALLBACK_URL);
     setupFbxModelAsEnemyTemplate(state, idleFbxModel as THREE.Group, "Real FBX idle.fbx model loaded");
-    setMode("FBX idle soldier");
+    setMode("FBX idle soldier + combat clips");
     return;
   } catch (error) {
     console.warn("FBX fallback model unavailable, using procedural soldiers.", error);
-  }
-
-  try {
-    const clipEntries = await Promise.all(
-      Object.entries(FBX_ANIMATION_URLS).map(async ([key, url]) => {
-        const loaded = await fbxLoader.loadAsync(url);
-        return [key, loaded.animations[0]] as const;
-      })
-    );
-    state.fbxClips = Object.fromEntries(clipEntries.filter((entry) => entry[1]));
-  } catch (error) {
-    console.warn("FBX animation clips unavailable.", error);
   }
 
   state.enemyTemplate = null;
