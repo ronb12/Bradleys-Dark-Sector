@@ -155,6 +155,11 @@ function findRigNode<T extends THREE.Object3D = THREE.Object3D>(model: THREE.Obj
   return match;
 }
 
+function hasWebGLSupport() {
+  const canvas = document.createElement("canvas");
+  return !!(canvas.getContext("webgl2") || canvas.getContext("webgl"));
+}
+
 function makeRifleProp() {
   const group = new THREE.Group();
   const rifleBlack = makeMaterial(0x0a0d0f, 0.45, 0.72);
@@ -187,6 +192,18 @@ function makeRifleProp() {
   const scope = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.06, 0.08), rifleMetal);
   scope.position.set(0.04, 0.08, 0);
   group.add(scope);
+
+  const muzzleBrake = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.035, 0.055), rifleMetal);
+  muzzleBrake.position.set(0.82, -0.005, 0);
+  group.add(muzzleBrake);
+
+  const laser = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.012, 0.012, 0.22, 8),
+    new THREE.MeshStandardMaterial({ color: 0xef4444, emissive: 0xdc2626, emissiveIntensity: 1.4 })
+  );
+  laser.rotation.z = Math.PI / 2;
+  laser.position.set(0.29, -0.065, -0.065);
+  group.add(laser);
 
   const sling = new THREE.Mesh(new THREE.TorusGeometry(0.26, 0.008, 8, 20, Math.PI), tape);
   sling.rotation.set(Math.PI / 2, 0.18, Math.PI / 2);
@@ -441,6 +458,64 @@ function createEnemyBeacon(color: number) {
   return group;
 }
 
+function addEnemyRoleGear(enemy: THREE.Group, enemyType: EnemyType, accent: number) {
+  if (enemy.getObjectByName("DarkSectorRoleGear")) return;
+  const gear = new THREE.Group();
+  gear.name = "DarkSectorRoleGear";
+  const black = makeMaterial(0x07090a, 0.55, 0.55);
+  const armor = makeMaterial(0x151a16, 0.8, 0.22);
+  const signal = new THREE.MeshStandardMaterial({ color: accent, emissive: accent, emissiveIntensity: 1.6 });
+
+  if (enemyType.tacticalRole === "heavy") {
+    const shield = new THREE.Mesh(new THREE.BoxGeometry(0.88, 0.92, 0.1), armor);
+    shield.position.set(0, 1.5, -0.5);
+    gear.add(shield);
+    [-0.52, 0.52].forEach((x) => {
+      const pod = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.48, 0.16), black);
+      pod.position.set(x, 1.48, -0.42);
+      gear.add(pod);
+    });
+  }
+
+  if (enemyType.tacticalRole === "marksman") {
+    const rangefinder = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.1, 0.2), signal);
+    rangefinder.position.set(0.24, 2.31, -0.34);
+    gear.add(rangefinder);
+    const cape = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.72, 1.05, 2, 3),
+      new THREE.MeshStandardMaterial({ color: 0x1f2c22, roughness: 0.96, metalness: 0.01, side: THREE.DoubleSide })
+    );
+    cape.position.set(0, 1.55, 0.47);
+    cape.rotation.x = -0.18;
+    gear.add(cape);
+  }
+
+  if (enemyType.tacticalRole === "commander") {
+    const commandBand = new THREE.Mesh(new THREE.TorusGeometry(0.33, 0.015, 8, 28), signal);
+    commandBand.position.set(0, 2.39, 0);
+    commandBand.rotation.x = Math.PI / 2;
+    gear.add(commandBand);
+    const uplink = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.018, 0.92, 8), black);
+    uplink.position.set(0.25, 2.02, 0.36);
+    uplink.rotation.z = -0.22;
+    gear.add(uplink);
+    const beacon = new THREE.Mesh(new THREE.SphereGeometry(0.045, 10, 8), signal);
+    beacon.position.set(0.35, 2.46, 0.24);
+    gear.add(beacon);
+  }
+
+  if (enemyType.tacticalRole === "assault") {
+    const shoulderMark = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.05, 0.16), signal);
+    shoulderMark.position.set(-0.46, 1.94, -0.12);
+    gear.add(shoulderMark);
+    const breacherCharge = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.22, 0.08), black);
+    breacherCharge.position.set(-0.31, 1.22, -0.34);
+    gear.add(breacherCharge);
+  }
+
+  enemy.add(gear);
+}
+
 function applyEnemyVariant(enemy: THREE.Group, enemyType: EnemyType) {
   enemy.scale.multiplyScalar(enemyType.scale);
   enemy.userData.enemyType = enemyType;
@@ -491,6 +566,8 @@ function applyEnemyVariant(enemy: THREE.Group, enemyType: EnemyType) {
     threatLight.position.set(0, 1.7, -0.9);
     enemy.add(threatLight);
   }
+
+  addEnemyRoleGear(enemy, enemyType, accent);
 }
 
 function buildMixamoCombatClips(model: THREE.Group) {
@@ -813,6 +890,24 @@ function makeRealisticProceduralSoldier(name: string, color: number, enemy = fal
   rightKnee.position.x = 0.2;
   group.add(rightKnee);
 
+  const belt = new THREE.Mesh(new THREE.BoxGeometry(0.74, 0.08, 0.08), black);
+  belt.position.set(0, 1.08, -0.21);
+  group.add(belt);
+
+  const thighRig = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.3, 0.08), black);
+  thighRig.name = "ThighRig";
+  thighRig.position.set(0.34, 0.69, -0.08);
+  thighRig.rotation.z = -0.08;
+  group.add(thighRig);
+
+  const leftBootSole = new THREE.Mesh(new THREE.BoxGeometry(0.31, 0.045, 0.48), armor);
+  leftBootSole.position.set(-0.19, -0.045, 0.08);
+  group.add(leftBootSole);
+
+  const rightBootSole = leftBootSole.clone();
+  rightBootSole.position.x = 0.19;
+  group.add(rightBootSole);
+
   const lBoot = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.16, 0.44), black);
   lBoot.position.set(-0.19, 0.05, 0.08);
   group.add(lBoot);
@@ -832,10 +927,20 @@ function makeRealisticProceduralSoldier(name: string, color: number, enemy = fal
   const scope = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.08, 0.11), black);
   scope.position.set(0.05, 0.1, 0);
   rifle.add(scope);
+  const opticLens = new THREE.Mesh(new THREE.BoxGeometry(0.045, 0.055, 0.12), enemyAccent);
+  opticLens.position.set(0.22, 0.1, -0.002);
+  rifle.add(opticLens);
   const mag = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.28, 0.09), black);
   mag.position.set(-0.08, -0.18, 0);
   mag.rotation.z = -0.2;
   rifle.add(mag);
+  const foregrip = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.24, 0.08), black);
+  foregrip.position.set(0.34, -0.16, 0);
+  foregrip.rotation.z = -0.12;
+  rifle.add(foregrip);
+  const muzzle = new THREE.Mesh(new THREE.BoxGeometry(0.11, 0.055, 0.095), black);
+  muzzle.position.set(1.08, -0.01, 0);
+  rifle.add(muzzle);
   const stock = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.12, 0.18), black);
   stock.position.set(-0.58, -0.04, 0.02);
   stock.rotation.z = -0.3;
@@ -987,6 +1092,36 @@ function makeGroundTexture() {
     ctx.lineTo(Math.random() * canvas.width, Math.random() * canvas.height);
     ctx.stroke();
   }
+  for (let lane = 0; lane < 4; lane += 1) {
+    const y = 140 + lane * 210 + Math.random() * 40;
+    ctx.strokeStyle = "rgba(8, 7, 5, 0.28)";
+    ctx.lineWidth = 9;
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    for (let x = 0; x <= canvas.width; x += 72) {
+      ctx.lineTo(x, y + Math.sin(x * 0.018 + lane) * 22);
+    }
+    ctx.stroke();
+    ctx.strokeStyle = "rgba(90, 78, 55, 0.2)";
+    ctx.lineWidth = 2;
+    ctx.setLineDash([18, 22]);
+    ctx.beginPath();
+    ctx.moveTo(0, y + 22);
+    ctx.lineTo(canvas.width, y + 12);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+  for (let i = 0; i < 18; i += 1) {
+    const x = Math.random() * canvas.width;
+    const y = Math.random() * canvas.height;
+    const gradient = ctx.createRadialGradient(x, y, 4, x, y, 40 + Math.random() * 70);
+    gradient.addColorStop(0, "rgba(0,0,0,0.38)");
+    gradient.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = gradient;
+    ctx.beginPath();
+    ctx.arc(x, y, 80, 0, Math.PI * 2);
+    ctx.fill();
+  }
   return canvas;
 }
 
@@ -1033,6 +1168,7 @@ function makeWeapon() {
   const group = new THREE.Group();
   const black = makeMaterial(0x090909, 0.45, 0.65);
   const metal = makeMaterial(0x4a5563, 0.4, 0.8);
+  const darkMetal = makeMaterial(0x171b20, 0.5, 0.72);
   const glow = new THREE.MeshStandardMaterial({
     color: 0x38bdf8,
     emissive: 0x0ea5e9,
@@ -1040,16 +1176,51 @@ function makeWeapon() {
   });
   const body = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.2, 1.25), black);
   group.add(body);
+  const upperRail = new THREE.Mesh(new THREE.BoxGeometry(0.31, 0.045, 1.02), darkMetal);
+  upperRail.position.set(0, 0.135, -0.07);
+  group.add(upperRail);
+  for (let i = 0; i < 7; i += 1) {
+    const notch = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.035, 0.045), metal);
+    notch.position.set(0, 0.17, -0.47 + i * 0.12);
+    group.add(notch);
+  }
   const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.8, 16), metal);
   barrel.rotation.x = Math.PI / 2;
   barrel.position.set(0, 0, -0.8);
   group.add(barrel);
+  const muzzleBrake = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.08, 0.16), darkMetal);
+  muzzleBrake.position.set(0, 0, -1.22);
+  group.add(muzzleBrake);
   const scope = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.13, 0.35), black);
   scope.position.set(0, 0.15, -0.15);
   group.add(scope);
+  const scopeLens = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.095, 0.025), glow);
+  scopeLens.position.set(0, 0.15, -0.345);
+  group.add(scopeLens);
   const sight = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.06, 0.06), glow);
   sight.position.set(0, 0.2, -0.68);
   group.add(sight);
+  const magazine = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.38, 0.18), darkMetal);
+  magazine.position.set(0.02, -0.25, 0.16);
+  magazine.rotation.x = -0.2;
+  group.add(magazine);
+  const foregrip = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.34, 0.12), black);
+  foregrip.position.set(0, -0.23, -0.42);
+  foregrip.rotation.x = 0.1;
+  group.add(foregrip);
+  const ammoCounter = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.08, 0.025), glow);
+  ammoCounter.name = "AmmoCounter";
+  ammoCounter.position.set(-0.145, 0.02, 0.25);
+  ammoCounter.rotation.y = -0.08;
+  group.add(ammoCounter);
+  const muzzleFlash = new THREE.Mesh(
+    new THREE.ConeGeometry(0.18, 0.54, 18),
+    new THREE.MeshBasicMaterial({ color: 0xffd36b, transparent: true, opacity: 0, depthWrite: false })
+  );
+  muzzleFlash.name = "MuzzleFlash";
+  muzzleFlash.rotation.x = -Math.PI / 2;
+  muzzleFlash.position.set(0, 0, -1.36);
+  group.add(muzzleFlash);
   group.position.set(0.38, -0.28, -0.75);
   return group;
 }
@@ -1063,8 +1234,82 @@ function addStatic(
   z: number
 ) {
   mesh.position.set(x, y, z);
+  enableShadows(mesh);
   scene.add(mesh);
   colliders.push(new THREE.Box3().setFromObject(mesh));
+}
+
+function makeBarricade() {
+  const group = new THREE.Group();
+  const concrete = makeMaterial(0x4b4c45, 0.96, 0.04);
+  const warning = new THREE.MeshBasicMaterial({ color: 0xf59e0b });
+  const block = new THREE.Mesh(new THREE.BoxGeometry(2.6, 0.72, 0.42), concrete);
+  block.position.y = 0.36;
+  group.add(block);
+  for (let i = 0; i < 3; i += 1) {
+    const stripe = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.05, 0.44), warning);
+    stripe.position.set(-0.8 + i * 0.78, 0.75, -0.01);
+    stripe.rotation.z = -0.55;
+    group.add(stripe);
+  }
+  return group;
+}
+
+function makeFloodlightTower(color = 0xdbeafe) {
+  const group = new THREE.Group();
+  const metal = makeMaterial(0x252a2e, 0.62, 0.58);
+  const glow = new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 1.9 });
+  const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.065, 5.2, 10), metal);
+  mast.position.y = 2.6;
+  group.add(mast);
+  const crossbar = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.08, 0.08), metal);
+  crossbar.position.y = 5.0;
+  group.add(crossbar);
+  [-0.38, 0.38].forEach((x) => {
+    const lamp = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.24, 0.12), glow);
+    lamp.position.set(x, 4.88, -0.12);
+    lamp.rotation.x = -0.45;
+    group.add(lamp);
+    const light = new THREE.SpotLight(color, 3.6, 24, 0.38, 0.5, 1.8);
+    light.position.set(x, 4.75, -0.35);
+    light.target.position.set(x, 0, -8);
+    group.add(light);
+    group.add(light.target);
+  });
+  return group;
+}
+
+function makeSatelliteArray() {
+  const group = new THREE.Group();
+  const metal = makeMaterial(0x434a4d, 0.6, 0.65);
+  const glow = new THREE.MeshBasicMaterial({ color: 0x38bdf8 });
+  const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.08, 1.8, 12), metal);
+  pole.position.y = 0.9;
+  group.add(pole);
+  const dish = new THREE.Mesh(new THREE.ConeGeometry(0.72, 0.34, 24, 1, true), metal);
+  dish.position.set(0, 1.86, -0.12);
+  dish.rotation.x = Math.PI / 2.5;
+  group.add(dish);
+  const node = new THREE.Mesh(new THREE.SphereGeometry(0.07, 12, 8), glow);
+  node.position.set(0, 1.84, -0.55);
+  group.add(node);
+  return group;
+}
+
+function makeAmmoCache() {
+  const group = new THREE.Group();
+  const crate = makeMaterial(0x2d3728, 0.86, 0.12);
+  const glow = new THREE.MeshStandardMaterial({ color: 0x22c55e, emissive: 0x16a34a, emissiveIntensity: 1.5 });
+  const base = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.58, 0.9), crate);
+  base.position.y = 0.29;
+  group.add(base);
+  const lid = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.12, 0.98), crate);
+  lid.position.y = 0.67;
+  group.add(lid);
+  const status = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.08, 0.035), glow);
+  status.position.set(0, 0.72, -0.5);
+  group.add(status);
+  return group;
 }
 
 function addEnvironment(scene: THREE.Scene, colliders: THREE.Box3[]) {
@@ -1139,6 +1384,45 @@ function addEnvironment(scene: THREE.Scene, colliders: THREE.Box3[]) {
     barrel.receiveShadow = true;
     scene.add(barrel);
   }
+
+  [
+    { x: -8, z: -6, r: 0.18 },
+    { x: 7.5, z: -8.5, r: -0.22 },
+    { x: -13, z: 9, r: 0.82 },
+    { x: 12.5, z: 10, r: -0.7 },
+  ].forEach(({ x, z, r }) => {
+    const barricade = makeBarricade();
+    barricade.rotation.y = r;
+    addStatic(scene, colliders, barricade, x, 0, z);
+  });
+
+  [
+    { x: -18, z: -18, r: 0.55, color: 0xffe0a3 },
+    { x: 18, z: 17, r: -2.45, color: 0xbfe8ff },
+  ].forEach(({ x, z, r, color }) => {
+    const tower = makeFloodlightTower(color);
+    tower.rotation.y = r;
+    scene.add(tower);
+    tower.position.set(x, 0, z);
+  });
+
+  [
+    { x: -19, z: 3, r: 0.9 },
+    { x: 18, z: -5, r: -0.75 },
+  ].forEach(({ x, z, r }) => {
+    const dish = makeSatelliteArray();
+    dish.rotation.y = r;
+    addStatic(scene, colliders, dish, x, 0, z);
+  });
+
+  [
+    { x: -4.8, z: 6.8, r: 0.35 },
+    { x: 5.2, z: 6.2, r: -0.3 },
+  ].forEach(({ x, z, r }) => {
+    const cache = makeAmmoCache();
+    cache.rotation.y = r;
+    addStatic(scene, colliders, cache, x, 0, z);
+  });
 
   for (let i = 0; i < 18; i += 1) {
     const crater = new THREE.Mesh(
@@ -1426,6 +1710,12 @@ function shoot(state: GameState, setHitMarker?: React.Dispatch<React.SetStateAct
   state.fireCooldown = 0.12;
   state.recoil = 1.85;
   playGunshotAudio(state);
+  const muzzleFlash = state.weapon.getObjectByName("MuzzleFlash") as THREE.Mesh | undefined;
+  if (muzzleFlash?.material instanceof THREE.MeshBasicMaterial) {
+    muzzleFlash.material.opacity = 0.95;
+    muzzleFlash.rotation.z = Math.random() * Math.PI;
+    muzzleFlash.scale.setScalar(0.75 + Math.random() * 0.5);
+  }
 
   const origin = new THREE.Vector3();
   state.camera.getWorldPosition(origin);
@@ -1464,13 +1754,31 @@ function shoot(state: GameState, setHitMarker?: React.Dispatch<React.SetStateAct
       state.lastKillAt = state.clock.elapsedTime;
       setCombatMessage?.(`${closestHit.enemy.userData.kind} down`);
     }
+    for (let i = 0; i < 7; i += 1) {
+      const spark = new THREE.Mesh(
+        new THREE.BoxGeometry(0.035, 0.035, 0.18),
+        new THREE.MeshBasicMaterial({ color: i % 2 ? 0xffb454 : 0xff4938 })
+      );
+      const target = closestHit.enemy.position.clone().add(new THREE.Vector3(0, 1.45 + Math.random() * 0.45, 0));
+      spark.position.copy(target);
+      spark.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
+      spark.userData.velocity = new THREE.Vector3(
+        (Math.random() - 0.5) * 5,
+        Math.random() * 3.5,
+        (Math.random() - 0.5) * 5
+      );
+      spark.userData.life = 0.24 + Math.random() * 0.18;
+      state.scene.add(spark);
+      state.bullets.push(spark);
+    }
   }
 
   const bullet = new THREE.Mesh(
-    new THREE.SphereGeometry(0.045, 8, 8),
+    new THREE.CapsuleGeometry(0.035, 0.38, 4, 8),
     new THREE.MeshBasicMaterial({ color: closestHit ? 0xff5533 : 0xfff3a3 })
   );
   bullet.position.copy(origin);
+  bullet.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().normalize());
   bullet.userData.velocity = dir.multiplyScalar(70);
   bullet.userData.life = 1.1;
   state.scene.add(bullet);
@@ -1553,6 +1861,17 @@ function updateGame(
     -0.75
   );
   state.weapon.rotation.z = Math.sin(state.bobTime) * (moving ? 0.02 : 0.004);
+  const muzzleFlash = state.weapon.getObjectByName("MuzzleFlash") as THREE.Mesh | undefined;
+  if (muzzleFlash?.material instanceof THREE.MeshBasicMaterial) {
+    muzzleFlash.material.opacity = Math.max(0, muzzleFlash.material.opacity - dt * 8.5);
+  }
+  const ammoCounter = state.weapon.getObjectByName("AmmoCounter") as THREE.Mesh | undefined;
+  if (ammoCounter?.material instanceof THREE.MeshStandardMaterial) {
+    const ammoRatio = state.reload > 0 ? 0.2 : state.ammo / state.maxAmmo;
+    ammoCounter.material.emissiveIntensity = 0.55 + ammoRatio * 1.6 + Math.sin(state.clock.elapsedTime * 9) * 0.08;
+    ammoCounter.material.color.setHex(ammoRatio < 0.28 ? 0xf97316 : 0x38bdf8);
+    ammoCounter.material.emissive.setHex(ammoRatio < 0.28 ? 0xea580c : 0x0ea5e9);
+  }
   state.recoil = Math.max(0, state.recoil - dt * 8.5);
 
   state.allies.forEach((ally, index) => {
@@ -1670,6 +1989,7 @@ export default function App() {
   const [combatMessage, setCombatMessage] = useState("Move to the floodlit cover and hold the yard.");
   const [hitMarkerAt, setHitMarkerAt] = useState(0);
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
+  const [renderError, setRenderError] = useState("");
   const [hud, setHud] = useState<Hud>({
     health: 100,
     ammo: 30,
@@ -1690,6 +2010,8 @@ export default function App() {
     try {
       const res = await fetch("/api/scores", { headers: { accept: "application/json" } });
       if (!res.ok) return;
+      const contentType = res.headers.get("content-type") || "";
+      if (!contentType.includes("application/json")) return;
       const payload = await res.json();
       if (payload?.ok && Array.isArray(payload.scores)) setLeaderboard(payload.scores);
     } catch (error) {
@@ -1815,7 +2137,20 @@ export default function App() {
     const container = mountRef.current;
     if (!container) return;
 
-    const state = initScene(container);
+    if (!hasWebGLSupport()) {
+      setRenderError("WebGL is unavailable in this browser session.");
+      return;
+    }
+
+    let state: GameState;
+    try {
+      state = initScene(container);
+      setRenderError("");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "WebGL renderer could not start.";
+      setRenderError(message);
+      return;
+    }
     gameRef.current = state;
     loadEnemyModel(state, setHud).catch((error) => {
       console.warn("Enemy model loading failed.", error);
@@ -1895,10 +2230,51 @@ export default function App() {
   const hitMarkerVisible = Date.now() - hitMarkerAt < HITMARKER_SECONDS * 1000;
   const killFlashVisible = !!gameRef.current && gameRef.current.clock.elapsedTime - gameRef.current.lastKillAt < KILLFLASH_SECONDS;
   const waveBannerVisible = !!gameRef.current && gameRef.current.clock.elapsedTime < gameRef.current.waveBannerUntil;
+  const tacticalGrade = accuracy >= 65 && (liveStats?.headshots ?? 0) >= 3 ? "S-TIER" : accuracy >= 45 ? "FIELD READY" : "TRAINING";
+  const doctrine = [
+    { label: "Cover discipline", value: hud.wave >= 2 ? "Live" : "Training" },
+    { label: "Target priority", value: hud.enemies <= 2 ? "Clean" : "Active" },
+    { label: "Ammo economy", value: hud.ammo === "RELOAD" ? "Reload" : "Stable" },
+  ];
+  const competitiveSystems = [
+    { label: "Loadout", value: hud.wave >= 3 ? "Marksman Kit" : "Starter Rifle" },
+    { label: "Ranked", value: hud.score >= 2500 ? "Veteran Queue" : "Recruit Queue" },
+    { label: "Clan Ops", value: hud.kills >= 15 ? "Squad Ready" : "Solo Drill" },
+    { label: "Season Event", value: hud.wave >= 4 ? "Blackout Live" : "Daily Contract" },
+  ];
 
   return (
     <div className="relative h-screen w-full select-none overflow-hidden bg-black text-white">
       <div ref={mountRef} className="absolute inset-0" />
+
+      {renderError ? (
+        <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/88 p-6 text-center backdrop-blur-sm">
+          <div className="max-w-2xl rounded-3xl border border-amber-300/30 bg-slate-950/88 p-6 shadow-2xl">
+            <div className="text-xs tracking-[0.3em] text-amber-200">RENDERER OFFLINE</div>
+            <h1 className="mt-3 text-4xl font-black text-cyan-100">Bradley&apos;s Dark Sector needs WebGL enabled.</h1>
+            <p className="mt-4 text-slate-300">
+              The game assets are ready, but this browser session blocked the 3D renderer. Open the site in Chrome, Safari, or Edge with hardware acceleration/WebGL enabled.
+            </p>
+            <div className="mt-5 rounded-2xl border border-cyan-300/20 bg-cyan-300/8 p-4 text-left">
+              <div className="text-xs tracking-[0.25em] text-cyan-200">OPERATIONS DIRECTOR</div>
+              <div className="mt-2 text-lg font-black text-white">Fallback readiness check</div>
+              <p className="mt-2 text-sm leading-relaxed text-slate-300">
+                Tactical systems are loaded. Once WebGL is available, the mission director grades cover discipline,
+                target priority, and ammo economy during the live run.
+              </p>
+              <div className="mt-4 grid gap-2 sm:grid-cols-2">
+                {competitiveSystems.map((system) => (
+                  <div key={system.label} className="rounded-xl border border-white/10 bg-white/5 p-3">
+                    <div className="text-[10px] uppercase tracking-[0.2em] text-slate-400">{system.label}</div>
+                    <div className="mt-1 font-black text-cyan-100">{system.value}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <p className="mt-3 text-xs text-slate-400">{renderError}</p>
+          </div>
+        </div>
+      ) : null}
 
       {started && gameRef.current?.damagePulse ? (
         <div
@@ -1977,6 +2353,35 @@ export default function App() {
         <div className="mt-2 text-slate-100">Pointer Lock: {pointerLocked ? "Engaged" : "Tap game view"}</div>
         <div className="text-slate-300">Headshots: {liveStats?.headshots ?? 0}</div>
         <div className="text-slate-300">Shots landed: {liveStats?.shotsHit ?? 0}/{liveStats?.shotsFired ?? 0}</div>
+      </div>
+
+      <div className="pointer-events-none absolute right-4 top-36 z-20 w-72 rounded-2xl border border-cyan-300/20 bg-black/50 p-4 text-sm shadow-xl backdrop-blur">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <div className="text-xs tracking-[0.25em] text-cyan-200">OPERATIONS DIRECTOR</div>
+            <div className="mt-1 text-lg font-black text-white">Grade {tacticalGrade}</div>
+          </div>
+          <div className="rounded-full border border-amber-300/30 px-3 py-1 text-xs font-black text-amber-200">W{hud.wave}</div>
+        </div>
+        <div className="mt-3 grid gap-2">
+          {doctrine.map((item) => (
+            <div key={item.label} className="flex items-center justify-between rounded-xl border border-white/8 bg-white/5 px-3 py-2">
+              <span className="text-slate-300">{item.label}</span>
+              <strong className="text-cyan-100">{item.value}</strong>
+            </div>
+          ))}
+        </div>
+        <div className="mt-3 text-xs leading-relaxed text-slate-300">
+          Clear marksmen first, use cover nodes between reloads, and keep accuracy above 45% to build premium mission mastery.
+        </div>
+        <div className="mt-3 grid gap-2">
+          {competitiveSystems.map((system) => (
+            <div key={system.label} className="flex items-center justify-between rounded-xl border border-white/10 bg-white/5 px-3 py-2">
+              <span className="text-[10px] uppercase tracking-[0.2em] text-slate-400">{system.label}</span>
+              <strong className="text-xs text-cyan-100">{system.value}</strong>
+            </div>
+          ))}
+        </div>
       </div>
         </>
       ) : null}
