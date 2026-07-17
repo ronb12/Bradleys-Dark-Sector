@@ -83,8 +83,9 @@ Asset licenses: see [ASSET_LICENSES.md](./ASSET_LICENSES.md).
 | Script | Purpose |
 | --- | --- |
 | `npm run dev` | Vite game client |
-| `npm run pvp` | WebSocket PVP relay |
+| `npm run pvp` / `npm start` | WebSocket PVP relay (`PORT` / `PVP_PORT`) |
 | `npm run build` | Typecheck + production build |
+| `npm run check` | Lint + production build |
 | `npm run lint` | Oxlint |
 | `node qa-immersion-smoke.mjs` | Playwright smoke (dev server required) |
 | `node qa-projectile-cover.mjs` | In-flight enemy projectile cover regression |

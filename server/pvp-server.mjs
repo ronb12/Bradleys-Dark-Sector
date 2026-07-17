@@ -8,7 +8,7 @@
 import { WebSocketServer } from "ws";
 import { createServer } from "node:http";
 
-const PORT = Number(process.env.PVP_PORT || 2567);
+const PORT = Number(process.env.PORT || process.env.PVP_PORT || 2567);
 const TICK_MS = 50;
 const MAX_HEALTH = 100;
 const RESPAWN_MS = 2800;

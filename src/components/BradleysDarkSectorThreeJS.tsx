@@ -5,7 +5,7 @@ import { FBXLoader } from "three/addons/loaders/FBXLoader.js";
 import { clone as cloneSkeleton } from "three/addons/utils/SkeletonUtils.js";
 import type { GLTF } from "three/addons/loaders/GLTFLoader.js";
 import { PvpClient } from "../multiplayer/PvpClient";
-import { DEFAULT_PVP_ROOM, DEFAULT_PVP_WS_URL } from "../multiplayer/protocol";
+import { DEFAULT_PVP_ROOM } from "../multiplayer/protocol";
 import {
   applyHitReact,
   applyProceduralDeath,
@@ -3604,7 +3604,7 @@ export default function BradleysDarkSectorThreeJS() {
           });
         },
       },
-      { url: DEFAULT_PVP_WS_URL, room: pvpRoomInput.trim() || DEFAULT_PVP_ROOM },
+      { room: pvpRoomInput.trim() || DEFAULT_PVP_ROOM },
     );
     pvpClientRef.current = client;
     client.connect();

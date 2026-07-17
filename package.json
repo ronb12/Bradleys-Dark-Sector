@@ -9,7 +9,10 @@
     "lint": "oxlint",
     "preview": "vite preview",
     "pvp": "node server/pvp-server.mjs",
-    "dev:pvp": "node server/pvp-server.mjs"
+    "dev:pvp": "node server/pvp-server.mjs",
+    "start": "node server/pvp-server.mjs",
+    "typecheck": "tsc -b",
+    "check": "npm run lint && npm run build"
   },
   "dependencies": {
     "react": "^19.2.7",
