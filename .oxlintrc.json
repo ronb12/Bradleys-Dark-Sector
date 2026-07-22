@@ -4,5 +4,17 @@
   "rules": {
     "react/rules-of-hooks": "error",
     "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
+  },
+  "overrides": [
+    {
+      "files": ["src/components/BradleysDarkSectorThreeJS.tsx"],
+      "rules": {
+        // The mount/input effects intentionally register once and reach live game
+        // state through refs (see progressionRef); listing the loop functions as
+        // deps would re-bind listeners and rebuild the game every render. oxlint
+        // ignores inline disable directives for this rule, so it is scoped off here.
+        "react-hooks/exhaustive-deps": "off"
+      }
+    }
+  ]
 }

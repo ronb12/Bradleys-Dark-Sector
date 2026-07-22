@@ -54,6 +54,16 @@ Meta Quest 3 can play Solo and Range in the browser. Use the on-screen **ENTER V
 - Right-hand weapon / trigger fire; world-space VR menu + wrist HUD
 - Full checklist and HTTPS notes: [docs/QUEST_VR.md](./docs/QUEST_VR.md)
 
+An Android launcher APK is also available in `quest-launcher`. It appears under
+**Library → Unknown Sources** and opens the production game directly in Meta
+Quest Browser.
+
+1. Enable Developer Mode for the headset in the Meta Horizon mobile app.
+2. Connect the headset by USB and approve the USB debugging prompt.
+3. Run `npm run quest:build`, then `npm run quest:install`.
+
+Building requires JDK 21 plus Android SDK Platform 36 and Build Tools 36.0.0.
+
 ## Settings
 
 Use **Settings** (top-right): sensitivity, FOV, volumes, graphics preset, subtitles, reduce motion, invert Y. Progression (rank, XP, unlocks) persists in `localStorage`.
@@ -87,6 +97,8 @@ Asset licenses: see [ASSET_LICENSES.md](./ASSET_LICENSES.md).
 | `npm run build` | Typecheck + production build |
 | `npm run check` | Lint + production build |
 | `npm run lint` | Oxlint |
+| `npm run quest:build` | Build the Quest Android launcher APK |
+| `npm run quest:install` | Sideload the APK to an authorized USB headset |
 | `node qa-immersion-smoke.mjs` | Playwright smoke (dev server required) |
 | `node qa-projectile-cover.mjs` | In-flight enemy projectile cover regression |
 | `node qa-indoor-combat.mjs` | Indoor mission/destruction regression |

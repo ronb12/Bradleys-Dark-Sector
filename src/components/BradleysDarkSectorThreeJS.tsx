@@ -21,9 +21,17 @@ import {
   addRecoilShake,
   addSuppression,
   applyCameraShake,
+  applyEnemyBloodFlash,
   createCombatFx,
+  orientTracer,
+  releaseTracer,
   spawnBulletImpact,
+  spawnAmbientImpactSpark,
+  spawnFleshDeathGore,
+  spawnGroundBloodPool,
+  spawnMuzzleBlast,
   spawnShellCasing,
+  spawnTracer,
   suppressionHudOpacity,
   updateCombatFx,
   type CombatFxState,
@@ -35,6 +43,7 @@ import {
   enemyShouldHoldFire,
   signalGrenadeThreat,
   suppressEnemiesNearShot,
+  updateEnemyKneelStance,
   updateSquadCoordination,
   type CoverPoint,
   type Squad,
@@ -43,15 +52,27 @@ import { raycastColliders } from "../game/collisionWorld";
 import { DestructionSystem } from "../game/destruction";
 import { createGrenade, stepGrenade, sweepBullet, type GrenadeProjectile } from "../game/projectiles";
 import { DynamicQualityGovernor } from "../game/quality";
-import { WEAPONS, nextWeapon, type WeaponId } from "../game/weapons";
+import { WEAPONS, nextWeapon, weaponRecoilKick, damageAtRange, computeSpreadVisual, type WeaponId } from "../game/weapons";
 import { createWarehouseInterior, warehouseRoomAt } from "../game/warehouse";
 import { createImmersiveAudio, surfaceAtPosition, type ImmersiveAudio } from "../game/audio";
 import {
   loadEnvironmentTextures,
   applyTexturedGround,
   addCombatCoverToCompound,
+  addMilitaryFobDressing,
   createFallbackEnvTextures,
+  makeHelipadMarking,
+  makeSandbagWall,
+  makeConcertinaWire,
 } from "../game/environment";
+import {
+  applyPickupEffect,
+  createPickupSession,
+  respawnPickupsAfterWave,
+  resetPickupSession,
+  updatePickups,
+  type PickupSession,
+} from "../game/pickups";
 import { populateCompoundWithEnvironmentAssets } from "../game/envAssets";
 import {
   COMPOUND_WALL,
@@ -59,10 +80,23 @@ import {
   COMPOUND_GROUND_SIZE,
 } from "../game/compoundLayout";
 import {
+  COMBAT_SCENE_IDS,
+  applyCombatSceneAtmosphere,
+  buildCombatScene,
+  parseSceneFromUrl,
+  sceneMeta,
+  type CombatSceneId,
+  type CombatSceneSession,
+} from "../game/maps";
+import {
   allowRadioCue,
   assertRadioPoolsVaried,
   contactLine,
   enemyCalloutLine,
+  extractBoardLine,
+  extractHoldLine,
+  extractInboundLine,
+  extractSuccessLine,
   killConfirmLine,
   missionAmbientLine,
   missionBriefLine,
@@ -77,9 +111,14 @@ import {
   rangeOnlineLine,
   rangePassLine,
   reloadRemindLine,
+  qrfInboundLine,
+  contactDirectionLine,
+  vehicleBoomLine,
+  battlefieldChaosLine,
   waveInboundLine,
 } from "../game/radioLines";
 import {
+  createExtractionMission,
   missionHudText,
   nearestInteractMarker,
   pickMissionForWave,
@@ -87,12 +126,42 @@ import {
   type ActiveMission,
 } from "../game/missions";
 import {
+  createAlliedNpcState,
+  ensureAlliedNpcs,
+  nearestAlliedPrompt,
+  resetAlliedNpcSession,
+  tryAlliedNpcTalk,
+  updateAlliedNpcs,
+  alliedRadioSubtitle,
+  type AlliedNpcContext,
+  type AlliedNpcState,
+} from "../game/alliedNpcs";
+import {
+  createExtractionHelicopter,
+  disposeExtractionHelicopter,
+  EXTRACT_HOLD_SEC,
+  EXTRACT_LZ,
+  HELI_CABIN_CAMERA_OFFSET,
+  heliAudioProximity,
+  resetExtractionHelicopter,
+  startHeliInbound,
+  updateExtractionHelicopter,
+  upgradeExtractionHelicopterToGlb,
+  type ExtractionHelicopter,
+} from "../game/helicopter";
+import {
   initAtmosphere,
+  initBattlefieldChaos,
+  registerAtmosphereFx,
+  setAtmosphereLowPower,
   setWeather,
+  softPointsMaterial,
   spawnDestructionBurst,
   updateAtmosphereSystem,
+  updateBattlefieldChaos,
   updateDestruction,
   type AtmosphereState,
+  type BattlefieldChaosState,
 } from "../game/atmosphere";
 import {
   applyAttachmentMods,
@@ -106,8 +175,16 @@ import {
   type DifficultyId,
   type PersistentStats,
 } from "../game/progression";
-import { graphicsConfig, loadSettings, saveSettings, type GameSettings } from "../game/settings";
-import { attachEnemyWeapon, getEnemyMuzzleWorldPos, pickEnemyWeapon, preloadEnemyWeapons } from "../game/enemyWeapons";
+import { graphicsConfig, loadSettings, saveSettings, xrGraphicsConfig, type GameSettings } from "../game/settings";
+import {
+  applyMedkitHeal,
+  canUseMedkit,
+  maxHealthForDifficulty,
+  MAX_GRENADES,
+  PLAYER_DAMAGE_COOLDOWN,
+  WAVE_CLEAR_ARMOR_BONUS,
+} from "../game/survivability";
+import { attachEnemyWeapon, getEnemyMuzzleWorldPos, pickEnemyWeapon, preloadEnemyWeapons, syncEnemyWeaponGrip } from "../game/enemyWeapons";
 import {
   ADS_SENSITIVITY_MULTIPLIER,
   adsFov,
@@ -129,11 +206,13 @@ import {
 import { RangeBadgeRow, RangeChallengeResultCard } from "./RangeQualificationBadges";
 import { GameplayHud } from "./hud/GameplayHud";
 import {
+  applyPlayerWeaponVisibility,
   attachWeaponsToGrip,
   createXRRuntime,
   detachWeaponsFromGrip,
   disposeXRRuntime,
   endXRSession,
+  isXrPresenting,
   updateComfortVignette,
   type ShotPose,
   type XRMenuAction,
@@ -144,8 +223,11 @@ type GameMode = "solo" | "pvp" | "range";
 
 type DamageBearing = "front" | "left" | "right" | "rear" | null;
 
+type HitMarkerKind = "hit" | "armor" | "kill";
+
 type Hud = {
   health: number;
+  maxHealth: number;
   ammo: number | string;
   activeWeapon: WeaponId;
   m4Ammo: number;
@@ -171,6 +253,7 @@ type Hud = {
   missionTitle: string;
   missionProgress: number;
   suppression: number;
+  spreadRing: number;
   rank: string;
   difficulty: DifficultyId;
   crouching: boolean;
@@ -179,6 +262,7 @@ type Hud = {
   interactPrompt: string;
   missionBanner: string;
   unlockNotice: string;
+  supplyNotice: string;
   rangeHits: number;
   rangeMisses: number;
   rangeShots: number;
@@ -209,7 +293,7 @@ type GameState = {
   scene: THREE.Scene;
   camera: THREE.PerspectiveCamera;
   renderer: THREE.WebGLRenderer;
-  clock: THREE.Clock;
+  clock: THREE.Timer;
   player: THREE.Group;
   weapon: THREE.Group;
   weaponViews: Record<WeaponId, THREE.Group>;
@@ -224,6 +308,7 @@ type GameState = {
   grenadesRemaining: number;
   colliders: THREE.Box3[];
   health: number;
+  maxHealth: number;
   ammo: number;
   maxAmmo: number;
   score: number;
@@ -233,13 +318,18 @@ type GameState = {
   yaw: number;
   pitch: number;
   recoil: number;
+  recoilYaw: number;
   running: boolean;
   disposed: boolean;
   enemyTemplate: THREE.Group | null;
+  /** Resolves when Quaternius GLB load succeeds or fails — used to avoid procedural-only first wave. */
+  enemyTemplatePromise: Promise<void> | null;
   enemyAnimations: THREE.AnimationClip[];
   fbxClips: Record<string, THREE.AnimationClip>;
   mixers: THREE.AnimationMixer[];
   enemyModelLoaded: boolean;
+  /** Monotonic token so late GLB waits don't spawn into a restarted mission. */
+  waveContentToken: number;
   fbxModeLoaded: boolean;
   killStreak: number;
   bestStreak: number;
@@ -249,6 +339,12 @@ type GameState = {
   lastMissionTime: string;
   playerDamageCooldown: number;
   enemyVolleyCooldown: number;
+  /** Global lock after any hostile grenade throw. */
+  enemyGrenadeLockUntil: number;
+  /** Seconds the player has barely moved — used for tactical grenade checks. */
+  playerStationarySec: number;
+  lastPlayerX: number;
+  lastPlayerZ: number;
   gameMode: GameMode;
   pvpKills: number;
   pvpDeaths: number;
@@ -263,6 +359,7 @@ type GameState = {
   lastDamageBearing: DamageBearing;
   combatFx: CombatFxState;
   atmosphere: AtmosphereState;
+  battlefieldChaos: BattlefieldChaosState;
   activeMission: ActiveMission | null;
   coverPoints: CoverPoint[];
   squads: Squad[];
@@ -271,6 +368,8 @@ type GameState = {
   footstepAccum: number;
   nextDistantFireAt: number;
   nextCalloutAt: number;
+  /** Mid-fight pressure spawns when the yard goes quiet. */
+  nextPressureSpawnAt: number;
   difficulty: DifficultyId;
   sessionKills: number;
   interactPulse: boolean;
@@ -282,23 +381,69 @@ type GameState = {
   dyingEnemies: THREE.Group[];
   shootingRange: ShootingRangeSession | null;
   compoundColliders: THREE.Box3[];
+  compoundMapRoot: THREE.Group;
+  activeSceneId: CombatSceneId;
+  altSceneSession: CombatSceneSession | null;
+  spawnHalf: number;
+  hemisphereLight: THREE.HemisphereLight;
+  pickups: PickupSession | null;
+  pickupPrompt: string | null;
   xr: XRRuntime | null;
   destruction: DestructionSystem;
   quality: DynamicQualityGovernor;
+  extractionHeli: ExtractionHelicopter | null;
+  /** Next elapsed-time when extract hold may spawn pressure. */
+  extractReinforceAt: number;
+  /** Last extraction mission phase that played a radio cue. */
+  extractAnnouncedPhase: number;
+  /** Solo run ended via successful helicopter board. */
+  extractSucceeded: boolean;
+  /** True while land→board→depart cinematic plays (AAR deferred). */
+  extractCinematic: boolean;
+  alliedNpcState: AlliedNpcState;
 };
 
+/** Max live hostiles — keeps Quest perf sane while the yard stays hot. */
+const MAX_ALIVE_ENEMIES = () => (isTouchDevice() ? 16 : 22);
+const PRESSURE_SPAWN_THRESHOLD = 5;
+
+function waveEnemyTarget(wave: number, enemyCountMul: number) {
+  return Math.min(MAX_ALIVE_ENEMIES(), Math.max(8, Math.round((9 + wave * 2.5) * enemyCountMul)));
+}
+
+function spawnDistanceBand(state: GameState) {
+  if (state.activeSceneId === "compound") return { min: 11, max: 26 };
+  const half = state.spawnHalf;
+  return { min: Math.max(10, half * 0.22), max: Math.max(22, half * 0.58) };
+}
+
+/** Enemy fire pacing — slower bursts to avoid unfair stacked volleys. */
+const ENEMY_FIRE_COOLDOWN_MUL = 1.18;
+/** Solo-only extra reduction on hostile bullet/grenade HP damage (PvP untouched). */
+const SOLO_ENEMY_DAMAGE_MUL = 0.78;
+
 const ENEMY_TYPES: EnemyType[] = [
-  { name: "Rifleman", color: 0x747a4e, hp: 75, speed: 2.35, score: 100, range: 16, damage: 2, fireCooldown: 1.55, preferredDistance: 10, minimumDistance: 5 },
-  { name: "Scout", color: 0x526f50, hp: 55, speed: 3.15, score: 130, range: 6, damage: 4, fireCooldown: 0.95, preferredDistance: 4.5, minimumDistance: 3.25 },
-  { name: "Heavy", color: 0x877044, hp: 135, speed: 1.65, score: 220, range: 13, damage: 4, fireCooldown: 1.85, preferredDistance: 8, minimumDistance: 5.5 },
-  { name: "Sniper", color: 0x59694a, hp: 65, speed: 1.85, score: 180, range: 18, damage: 5, fireCooldown: 3.1, preferredDistance: 13, minimumDistance: 6 },
-  { name: "Commander", color: 0x6f5e45, hp: 170, speed: 2.05, score: 350, range: 15, damage: 3, fireCooldown: 1.55, preferredDistance: 10, minimumDistance: 5.5 },
+  // Speeds are m/s world velocity. Tuned vs player walk 5.2 / sprint 8.2 so
+  // squads jog and assault at a readable tactical pace (not half-speed shuffle).
+  { name: "Rifleman", color: 0x747a4e, hp: 75, speed: 4.15, score: 100, range: 16, damage: 2, fireCooldown: 1.55, preferredDistance: 10, minimumDistance: 5 },
+  { name: "Scout", color: 0x526f50, hp: 55, speed: 5.55, score: 130, range: 6, damage: 2, fireCooldown: 0.95, preferredDistance: 4.5, minimumDistance: 3.25 },
+  { name: "Heavy", color: 0x877044, hp: 135, speed: 3.25, score: 220, range: 13, damage: 2, fireCooldown: 1.85, preferredDistance: 8, minimumDistance: 5.5 },
+  { name: "Sniper", color: 0x59694a, hp: 65, speed: 3.55, score: 180, range: 18, damage: 3, fireCooldown: 3.1, preferredDistance: 13, minimumDistance: 6 },
+  { name: "Commander", color: 0x6f5e45, hp: 170, speed: 4.05, score: 350, range: 15, damage: 2, fireCooldown: 1.55, preferredDistance: 10, minimumDistance: 5.5 },
 ];
 
 /** Max distance at which enemies may deal HP damage (fair visual engagement). */
-const FAIR_DAMAGE_RANGE = 16;
+const FAIR_DAMAGE_RANGE = 15;
 /** How long an enemy stays "seen" after leaving the camera frustum. */
-const ENEMY_SEEN_MEMORY_MS = 2800;
+const ENEMY_SEEN_MEMORY_MS = 2200;
+/** Global pacing — at most one hostile grenade volley per window. */
+const ENEMY_GRENADE_GLOBAL_COOLDOWN = 55;
+const ENEMY_GRENADE_MIN_RANGE = 10;
+const ENEMY_GRENADE_MAX_RANGE = 13;
+const ENEMY_GRENADE_THROW_CHANCE = 0.07;
+const ENEMY_GRENADE_STATIONARY_SEC = 6;
+const ENEMY_GRENADE_MIN_PLAYER_HP = 0.35;
+const ENEMY_GRENADE_MAX_SUPPRESSION = 0.42;
 /** Quaternius SWAT is authored at a correct 1.82 m runtime height. */
 const GLB_SOLDIER_SCALE = 1;
 
@@ -347,17 +492,26 @@ export default function BradleysDarkSectorThreeJS() {
   const [xrPresenting, setXrPresenting] = useState(false);
   const [touchDevice] = useState(() => isTouchDevice());
   const [gameOver, setGameOver] = useState(false);
-  const [hitFlash, setHitFlash] = useState(false);
+  /** Distinguishes death AAR from successful helicopter extract. */
+  const [missionOutcome, setMissionOutcome] = useState<"failed" | "extracted" | null>(null);
+  const [hitMarker, setHitMarker] = useState<HitMarkerKind | null>(null);
+  const hitMarkerTimerRef = useRef<number | null>(null);
   const [audioMuted, setAudioMuted] = useState(false);
   const [pvpConnecting, setPvpConnecting] = useState(false);
   const [pvpError, setPvpError] = useState<string | null>(null);
   const [progression, setProgression] = useState<PersistentStats>(() => loadProgression());
+  // Game-loop closures register once on mount; they must read progression via this
+  // ref or they'd see the first render's snapshot forever (stale loadout/unlocks).
+  const progressionRef = useRef(progression);
+  progressionRef.current = progression;
   const [showSettings, setShowSettings] = useState(false);
   const [settings, setSettings] = useState<GameSettings>(() => loadSettings());
   const [selectedDifficulty, setSelectedDifficulty] = useState<DifficultyId>(() => loadProgression().preferredDifficulty);
+  const [selectedScene, setSelectedScene] = useState<CombatSceneId>(() => parseSceneFromUrl());
   const [pvpRoomInput, setPvpRoomInput] = useState(DEFAULT_PVP_ROOM);
   const [hud, setHud] = useState<Hud>({
     health: 100,
+    maxHealth: 100,
     ammo: 30,
     activeWeapon: "m4",
     m4Ammo: WEAPONS.m4.maxAmmo,
@@ -383,6 +537,7 @@ export default function BradleysDarkSectorThreeJS() {
     missionTitle: "Compound Sweep",
     missionProgress: 0,
     suppression: 0,
+    spreadRing: 0,
     rank: rankFromXp(loadProgression().xp).rank,
     difficulty: loadProgression().preferredDifficulty,
     crouching: false,
@@ -391,6 +546,7 @@ export default function BradleysDarkSectorThreeJS() {
     interactPrompt: "",
     missionBanner: "",
     unlockNotice: "",
+    supplyNotice: "",
     rangeHits: 0,
     rangeMisses: 0,
     rangeShots: 0,
@@ -719,8 +875,55 @@ export default function BradleysDarkSectorThreeJS() {
     model.userData.currentClipName = clip.name;
   }
 
+  function buildAlliedNpcContext(state: GameState, interactPressed = false): AlliedNpcContext {
+    const mission = state.activeMission;
+    return {
+      scene: state.scene,
+      mixers: state.mixers,
+      allies: state.allies,
+      enemyTemplate: state.enemyTemplate,
+      fbxModeLoaded: state.fbxModeLoaded,
+      getClip: (preferred) => getBestClip(state, preferred),
+      playClip: (mesh, preferred) => {
+        playAnimation(state, mesh, preferred);
+      },
+      makeProceduralAlly: (name, role) =>
+        makeRealisticProceduralSoldier(name, role === "commander" ? 0x4a5c42 : 0x3d4f52, false),
+      playRadio: (line, opts) => state.audio.playRadio(line, opts),
+      playerX: state.player.position.x,
+      playerZ: state.player.position.z,
+      gameMode: state.gameMode,
+      running: state.running,
+      extractMissionActive: mission?.type === "extraction",
+      extractPhase: mission?.type === "extraction" ? mission.phase : 0,
+      heli: state.extractionHeli,
+      interactPressed,
+      nowMs: performance.now(),
+    };
+  }
+
+  /** Blend measured displacement with intended steer speed so stuck frames don't slow-mo gait. */
+  function resolveEnemyAnimSpeed(motionSpeed: number, intendedSpeed: number, relocating: boolean) {
+    if (!relocating) return motionSpeed;
+    return Math.max(motionSpeed, intendedSpeed * 0.85);
+  }
+
+  /** Match Mixamo walk (~1.7 m/s) / run (~4.6 m/s) playback to world velocity. */
+  function syncEnemyLocomotionTimeScale(enemy: THREE.Group, animSpeed: number) {
+    const action = enemy.userData.currentAction as THREE.AnimationAction | undefined;
+    if (!action) return;
+    if (animSpeed < 0.35) {
+      action.setEffectiveTimeScale(1);
+      return;
+    }
+    const clipName = String(enemy.userData.currentClipName || "").toLowerCase();
+    const reference = /run|sprint|jog/.test(clipName) ? 4.6 : 1.7;
+    action.setEffectiveTimeScale(THREE.MathUtils.clamp(animSpeed / reference, 0.78, 1.45));
+  }
+
   function enhanceEnemyCombatReadability(enemy: THREE.Group, type: EnemyType) {
     const uniformTone = new THREE.Color(type.color);
+    const oliveShift = new THREE.Color(0x3a4230);
 
     enemy.traverse((child) => {
       if (!(child instanceof THREE.Mesh)) return;
@@ -732,10 +935,16 @@ export default function BradleysDarkSectorThreeJS() {
         child.material = child.material.clone();
       }
       const materials = Array.isArray(child.material) ? child.material : [child.material];
+      const name = child.name.toLowerCase();
+      const isHelmet = /helmet|headgear|cap|hat/i.test(name);
+      const isVest = /vest|armor|plate|tactical|gear|body/i.test(name);
       materials.forEach((material) => {
         if (!(material instanceof THREE.MeshStandardMaterial) && !(material instanceof THREE.MeshPhysicalMaterial)) return;
         // Matte military tint preserves texture detail without self-lighting.
         material.color.lerp(uniformTone, material.map ? 0.18 : 0.34);
+        material.color.lerp(oliveShift, material.map ? 0.08 : 0.14);
+        if (isHelmet) material.color.multiplyScalar(0.88);
+        if (isVest) material.color.lerp(new THREE.Color(0x2a3024), 0.12);
         material.emissive.setHex(0x000000);
         material.emissiveIntensity = 0;
         material.roughness = Math.max(material.roughness ?? 0.8, 0.78);
@@ -775,7 +984,7 @@ export default function BradleysDarkSectorThreeJS() {
       scoreValue: type.score,
       range: type.range,
       damage: type.damage,
-      fireCooldownMax: type.fireCooldown,
+      fireCooldownMax: type.fireCooldown * ENEMY_FIRE_COOLDOWN_MUL,
       preferredDistance: type.preferredDistance,
       minimumDistance: type.minimumDistance,
       alive: true,
@@ -795,6 +1004,9 @@ export default function BradleysDarkSectorThreeJS() {
       burstShotTimer: 0,
       smoothedSteer: new THREE.Vector3(),
       turnError: Math.PI,
+      kneelUntil: 0,
+      kneelBlend: 0,
+      kneeling: false,
     };
 
     enemy.traverse((child) => {
@@ -806,8 +1018,9 @@ export default function BradleysDarkSectorThreeJS() {
         } else {
           child.material = child.material.clone();
         }
-        child.castShadow = true;
-        child.receiveShadow = true;
+        // Enemy shadow casters are expensive at squad scale — rely on environment shadows only.
+        child.castShadow = false;
+        child.receiveShadow = false;
       }
     });
 
@@ -902,7 +1115,8 @@ export default function BradleysDarkSectorThreeJS() {
     if (state.enemyTemplate) {
       avatar.scale.setScalar(state.fbxModeLoaded ? 0.012 : 1.15);
       tintRemoteAvatar(avatar);
-      playAnimation(state, avatar, ["idle", "walk", "run"]);
+      attachEnemyWeapon(avatar, "ak47");
+      playAnimation(state, avatar, ["idle_gun_pointing", "idle_gun", "idle"]);
     } else {
       avatar.scale.setScalar(1.25);
       tintRemoteAvatar(avatar);
@@ -951,57 +1165,138 @@ export default function BradleysDarkSectorThreeJS() {
       avatar.userData.lastX = sample.x;
       avatar.userData.lastZ = sample.z;
       if (avatar.userData.modelType === "fbx-mixamo" || avatar.userData.modelType === "mixamo-glb") {
-        switchEnemyAnimation(state, avatar, moving ? ["run", "walk"] : ["idle"]);
+        switchEnemyAnimation(state, avatar, moving ? ["run_shoot", "run", "walk"] : ["idle_gun_pointing", "idle_gun", "idle"]);
       }
       animateSoldier(avatar, dt, moving);
+      syncEnemyWeaponGrip(avatar);
     }
   }
 
   function loadGlbFallback(state: GameState) {
+    if (state.enemyTemplatePromise) return state.enemyTemplatePromise;
     const gltfLoader = new GLTFLoader();
-    gltfLoader.load(
-      SOLDIER_MODEL_URL,
-      (gltf: GLTF) => {
-        // Quaternius faces +Z; wrap the source once so combat and PVP can
-        // consistently treat every rigged character as local -Z forward.
-        const model = new THREE.Group();
-        gltf.scene.rotation.y = Math.PI;
-        model.add(gltf.scene);
-        enableShadows(model);
-        model.scale.setScalar(GLB_SOLDIER_SCALE);
-        state.enemyAnimations = mergeAnimationLibrary(gltf.animations || []);
-        state.enemyTemplate = model;
-        state.enemyModelLoaded = true;
-        state.fbxModeLoaded = false;
-        if (state.gameMode === "solo" && state.enemies.length === 0 && state.running) {
-          for (let i = 0; i < 9; i += 1) spawnEnemy(state);
-        }
-        setHud((prev) => ({
-          ...prev,
-          modelMode: state.enemyAnimations.length
-            ? `Detailed soldier (${state.enemyAnimations.length} animations)`
-            : "Detailed soldier loaded",
-        }));
-      },
-      undefined,
-      () => {
-        state.enemyTemplate = null;
-        state.enemyAnimations = [];
-        state.fbxClips = {};
-        state.enemyModelLoaded = false;
-        state.fbxModeLoaded = false;
-        setHud((prev) => ({ ...prev, modelMode: "Using built-in soldiers — realistic model failed to load" }));
-        if (state.gameMode === "solo" && state.enemies.length === 0 && state.running) {
-          for (let i = 0; i < 9; i += 1) spawnEnemy(state);
-        }
-      }
-    );
+    state.enemyTemplatePromise = new Promise<void>((resolve) => {
+      gltfLoader.load(
+        SOLDIER_MODEL_URL,
+        (gltf: GLTF) => {
+          // Quaternius faces +Z; wrap the source once so combat and PVP can
+          // consistently treat every rigged character as local -Z forward.
+          const model = new THREE.Group();
+          gltf.scene.rotation.y = Math.PI;
+          model.add(gltf.scene);
+          enableShadows(model);
+          model.scale.setScalar(GLB_SOLDIER_SCALE);
+          state.enemyAnimations = mergeAnimationLibrary(gltf.animations || []);
+          state.enemyTemplate = model;
+          state.enemyModelLoaded = true;
+          state.fbxModeLoaded = false;
+          // Desktop often starts Solo before this finishes — upgrade stand-ins
+          // so the website matches the Quaternius soldiers seen in VR.
+          promoteProceduralEnemiesToTemplate(state);
+          ensureAlliedNpcs(state.alliedNpcState, buildAlliedNpcContext(state));
+          if (state.gameMode === "solo" && state.enemies.length === 0 && state.running) {
+            for (let i = 0; i < 9; i += 1) spawnEnemy(state);
+            state.squads = assignSquads(state.enemies);
+          }
+          setHud((prev) => ({
+            ...prev,
+            modelMode: state.enemyAnimations.length
+              ? `Detailed soldier (${state.enemyAnimations.length} animations)`
+              : "Detailed soldier loaded",
+          }));
+          resolve();
+        },
+        undefined,
+        () => {
+          state.enemyTemplate = null;
+          state.enemyAnimations = [];
+          state.fbxClips = {};
+          state.enemyModelLoaded = false;
+          state.fbxModeLoaded = false;
+          setHud((prev) => ({ ...prev, modelMode: "Using built-in soldiers — realistic model failed to load" }));
+          ensureAlliedNpcs(state.alliedNpcState, buildAlliedNpcContext(state));
+          if (state.gameMode === "solo" && state.enemies.length === 0 && state.running) {
+            for (let i = 0; i < 9; i += 1) spawnEnemy(state);
+            state.squads = assignSquads(state.enemies);
+          }
+          resolve();
+        },
+      );
+    });
+    return state.enemyTemplatePromise;
   }
 
   function loadEnemyTemplate(state: GameState) {
     // The bundled GLB is optimized for the web and includes idle, walk, and
     // run clips. Procedural soldiers remain a resilient offline fallback.
-    loadGlbFallback(state);
+    return loadGlbFallback(state);
+  }
+
+  /** Swap early procedural stand-ins for the Quaternius GLB once it arrives. */
+  function promoteProceduralEnemiesToTemplate(state: GameState) {
+    if (!state.enemyTemplate || state.disposed) return;
+    const standIns = state.enemies.filter(
+      (enemy) => enemy.userData.alive && enemy.userData.modelType === "procedural3d",
+    );
+    if (!standIns.length) return;
+
+    for (const old of standIns) {
+      const type =
+        ENEMY_TYPES.find((entry) => entry.name === old.userData.enemyType) || ENEMY_TYPES[0];
+      const posX = old.position.x;
+      const posZ = old.position.z;
+      const yaw = old.rotation.y;
+      const health = old.userData.health;
+      const maxHealth = old.userData.maxHealth;
+      const coverTarget = old.userData.coverTarget;
+      const coverLockUntil = old.userData.coverLockUntil;
+      const squadId = old.userData.squadId;
+      const role = old.userData.role;
+
+      if (old.userData.mixer) {
+        state.mixers = state.mixers.filter((mixer) => mixer !== old.userData.mixer);
+      }
+      state.scene.remove(old);
+      state.enemies = state.enemies.filter((enemy) => enemy !== old);
+
+      const neu = cloneEnemyFromTemplate(state, type);
+      const groundY = neu.userData.groundOffset ?? 0;
+      neu.position.set(posX, groundY, posZ);
+      neu.userData.baseY = groundY;
+      neu.rotation.y = yaw;
+      neu.userData.health = health;
+      neu.userData.maxHealth = maxHealth;
+      neu.userData.coverTarget = coverTarget;
+      neu.userData.coverLockUntil = coverLockUntil;
+      neu.userData.squadId = squadId;
+      neu.userData.role = role;
+      neu.userData.lastSeenAt = 0;
+      state.scene.add(neu);
+      state.enemies.push(neu);
+    }
+    state.squads = assignSquads(state.enemies);
+  }
+
+  /** Wait briefly for the GLB so wave-1 hostiles match VR instead of procedural blocks. */
+  async function waitForEnemyTemplate(state: GameState, timeoutMs = 2800) {
+    const pending = state.enemyTemplatePromise ?? loadEnemyTemplate(state);
+    await Promise.race([
+      pending,
+      new Promise<void>((resolve) => {
+        window.setTimeout(resolve, timeoutMs);
+      }),
+    ]);
+  }
+
+  function scheduleWaveContent(state: GameState) {
+    const token = (state.waveContentToken = (state.waveContentToken || 0) + 1);
+    void (async () => {
+      await waitForEnemyTemplate(state);
+      if (state.disposed || !state.running || state.waveContentToken !== token) return;
+      // Still empty if startMission cleared while waiting.
+      if (state.enemies.length > 0) return;
+      beginWaveContent(state);
+    })();
   }
 
   function makeWall(width: number, height: number, depth: number, color = 0x4a4a42) {
@@ -1063,27 +1358,63 @@ export default function BradleysDarkSectorThreeJS() {
     return c;
   }
 
-  function makeDustField() {
-    const count = 1000;
+  function makeDustField(particleCount = 1000) {
+    const count = particleCount;
     const span = COMPOUND_GROUND_SIZE * 0.85;
     const positions = new Float32Array(count * 3);
     for (let i = 0; i < count; i += 1) {
       positions[i * 3] = (Math.random() - 0.5) * span;
-      positions[i * 3 + 1] = 0.6 + Math.random() * 8;
+      // Keep most motes near the ground — high floaters read as blocks crossing the view in VR.
+      positions[i * 3 + 1] = 0.35 + Math.random() * 2.4;
       positions[i * 3 + 2] = (Math.random() - 0.5) * span;
     }
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
-    const material = new THREE.PointsMaterial({ color: 0xb8aa84, size: 0.07, transparent: true, opacity: 0.3, depthWrite: false });
+    const material = softPointsMaterial({
+      color: 0xb8aa84,
+      size: particleCount <= 320 ? 0.035 : 0.05,
+      opacity: 0.22,
+    });
     const points = new THREE.Points(geometry, material);
     points.userData.spin = true;
+    points.userData.dustField = true;
     return points;
   }
 
-  function makeSmokeLayer() {
+  function pruneTinyShadowCasters(root: THREE.Object3D) {
+    const size = new THREE.Vector3();
+    root.traverse((obj) => {
+      if (!(obj instanceof THREE.Mesh) || !obj.castShadow) return;
+      if (!obj.geometry.boundingBox) obj.geometry.computeBoundingBox();
+      obj.geometry.boundingBox?.getSize(size);
+      const volume = Math.abs(size.x * size.y * size.z);
+      if (volume < 0.08) obj.castShadow = false;
+    });
+  }
+
+  /** Forward+ lights are the biggest Solo FPS tax after shadows — keep a hard budget. */
+  function limitPointLights(root: THREE.Object3D, maxCount: number) {
+    const lights: THREE.PointLight[] = [];
+    root.traverse((obj) => {
+      if (obj instanceof THREE.PointLight) lights.push(obj);
+    });
+    lights.sort((a, b) => b.intensity * (b.distance || 1) - a.intensity * (a.distance || 1));
+    lights.forEach((light, index) => {
+      const keep = index < maxCount;
+      light.visible = keep;
+      if (!keep) {
+        light.intensity = 0;
+        light.castShadow = false;
+        // Detach decorative lights so WebGL doesn't still evaluate them.
+        if (light.parent && !light.userData.keepInScene) light.parent.remove(light);
+      }
+    });
+  }
+
+  function makeSmokeLayer(puffCount = 10) {
     const group = new THREE.Group();
     const span = COMPOUND_WALL * 1.7;
-    for (let i = 0; i < 10; i += 1) {
+    for (let i = 0; i < puffCount; i += 1) {
       const puff = new THREE.Mesh(
         new THREE.SphereGeometry(1.1 + Math.random() * 1.4, 12, 8),
         new THREE.MeshBasicMaterial({ color: 0x6f756e, transparent: true, opacity: 0.016, depthWrite: false })
@@ -1246,9 +1577,9 @@ export default function BradleysDarkSectorThreeJS() {
     state.fireCooldown = 0.12;
     state.triggerLatched = true;
     state.fireHeat = 0;
-    for (const [id, view] of Object.entries(state.weaponViews) as [WeaponId, THREE.Group][]) {
-      view.visible = id === nextWeapon;
-    }
+    state.recoilYaw = 0;
+    // Crosshair-only: weapon meshes stay hidden across switches.
+    applyPlayerWeaponVisibility(state.weaponViews);
     state.viewmodelPoses[nextWeapon].switchT = 1;
     state.audio.playSwitch();
     if (state.xr?.presenting) {
@@ -1279,19 +1610,68 @@ export default function BradleysDarkSectorThreeJS() {
     return "mission";
   }
 
-  function addStatic(scene: THREE.Scene, colliders: THREE.Box3[], mesh: THREE.Object3D, x: number, y: number, z: number) {
+  function addStatic(parent: THREE.Object3D, colliders: THREE.Box3[], mesh: THREE.Object3D, x: number, y: number, z: number) {
     mesh.position.set(x, y, z);
-    scene.add(mesh);
+    parent.add(mesh);
     colliders.push(new THREE.Box3().setFromObject(mesh));
   }
 
-  function addEnvironment(scene: THREE.Scene, colliders: THREE.Box3[]) {
+  function addEnvironment(parent: THREE.Object3D, colliders: THREE.Box3[], mobile = false) {
+    const scene = parent;
     const wall = COMPOUND_WALL;
     const wallLen = wall * 2;
     addStatic(scene, colliders, makeWall(wallLen, 5, 1.2, 0x3f423c), 0, 2.5, -wall);
-    addStatic(scene, colliders, makeWall(wallLen, 5, 1.2, 0x3f423c), 0, 2.5, wall);
+    // Keep the north checkpoint physically open instead of hiding a solid
+    // perimeter collider behind the gate arch.
+    const gateHalfWidth = 5.5;
+    const northWallSegmentLength = wall - gateHalfWidth;
+    const northWallSegmentCenter = (wall + gateHalfWidth) / 2;
+    addStatic(
+      scene,
+      colliders,
+      makeWall(northWallSegmentLength, 5, 1.2, 0x3f423c),
+      -northWallSegmentCenter,
+      2.5,
+      wall,
+    );
+    addStatic(
+      scene,
+      colliders,
+      makeWall(northWallSegmentLength, 5, 1.2, 0x3f423c),
+      northWallSegmentCenter,
+      2.5,
+      wall,
+    );
     addStatic(scene, colliders, makeWall(1.2, 5, wallLen, 0x3f423c), -wall, 2.5, 0);
     addStatic(scene, colliders, makeWall(1.2, 5, wallLen, 0x3f423c), wall, 2.5, 0);
+
+    // Inner HESCO berm skirt along walls — sparse FOB read, skipped on mobile for perf.
+    if (!mobile) {
+      const hescoMat = makeMaterial(0x8a7a58, 0.96, 0.02);
+      const hescoFrame = makeMaterial(0x4a5038, 0.9, 0.08);
+      const bermSpan = wallLen - 18;
+      const bermStep = 4.8;
+      for (const [x, z, alongX] of [
+        [0, -wall + 1.8, true],
+        [0, wall - 1.8, true],
+        [-wall + 1.8, 0, false],
+        [wall - 1.8, 0, false],
+      ] as const) {
+        for (let t = -bermSpan / 2; t <= bermSpan / 2; t += bermStep) {
+          const unit = new THREE.Group();
+          const fill = new THREE.Mesh(new THREE.BoxGeometry(1.5, 1.35, 1.5), hescoMat);
+          fill.position.y = 0.68;
+          fill.castShadow = true;
+          fill.receiveShadow = true;
+          unit.add(fill);
+          const frame = new THREE.Mesh(new THREE.BoxGeometry(1.58, 1.4, 1.58), hescoFrame);
+          frame.position.y = 0.7;
+          unit.add(frame);
+          unit.position.set(alongX ? x + t : x, 0, alongX ? z : z + t);
+          scene.add(unit);
+        }
+      }
+    }
 
     const concrete = makeMaterial(0x5c574c, 0.92, 0.02);
     const darkConcrete = makeMaterial(0x35322c, 0.96, 0.02);
@@ -1346,19 +1726,11 @@ export default function BradleysDarkSectorThreeJS() {
       scene.add(stripe);
     }
 
-    const helipad = new THREE.Mesh(new THREE.CircleGeometry(7.5, 48), asphalt);
-    helipad.rotation.x = -Math.PI / 2;
-    helipad.position.set(-22, 0.035, 12);
-    scene.add(helipad);
-    const helipadRing = new THREE.Mesh(
-      new THREE.RingGeometry(5.8, 6.15, 48),
-      new THREE.MeshBasicMaterial({ color: 0xd1b45c, side: THREE.DoubleSide })
-    );
-    helipadRing.rotation.x = -Math.PI / 2;
-    helipadRing.position.set(-22, 0.045, 12);
-    scene.add(helipadRing);
-    const heliLight = new THREE.PointLight(0xe8c56a, 3.2, 22, 1.6);
-    heliLight.position.set(-22, 5.5, 12);
+    const helipadMarking = makeHelipadMarking(EXTRACT_LZ.radius);
+    helipadMarking.position.set(EXTRACT_LZ.x, 0, EXTRACT_LZ.z);
+    scene.add(helipadMarking);
+    const heliLight = new THREE.PointLight(0xe8c56a, 3.2, 28, 1.6);
+    heliLight.position.set(EXTRACT_LZ.x, 5.5, EXTRACT_LZ.z);
     scene.add(heliLight);
 
     // Outer warehouses + flank annexes — keeps the center yard open for fights.
@@ -1374,7 +1746,7 @@ export default function BradleysDarkSectorThreeJS() {
       [28, -46, 9, 10, 5],
     ];
 
-    buildings.forEach(([x, z, w, d, h], buildingIndex) => {
+    buildings.forEach(([x, z, w, d, h]) => {
       const group = new THREE.Group();
       group.position.set(x, 0, z);
       const back = new THREE.Mesh(new THREE.BoxGeometry(w, h, 0.45), concrete);
@@ -1389,23 +1761,21 @@ export default function BradleysDarkSectorThreeJS() {
       frontB.position.x = w * 0.33;
       const lintel = new THREE.Mesh(new THREE.BoxGeometry(w * 0.36, h * 0.22, 0.45), concrete);
       lintel.position.set(0, h * 0.82, -d / 2);
-      const doorFrame = new THREE.Mesh(new THREE.BoxGeometry(w * 0.22, h * 0.55, 0.2), paintedMetal);
-      doorFrame.position.set(0, h * 0.28, -d / 2 - 0.12);
-      const door = new THREE.Mesh(new THREE.BoxGeometry(w * 0.16, h * 0.48, 0.08), metal);
-      door.position.set(0, h * 0.26, -d / 2 - 0.22);
       const roof = new THREE.Mesh(new THREE.BoxGeometry(w + 0.7, 0.35, d + 0.7), darkConcrete);
       roof.position.y = h + 0.18;
       const parapet = new THREE.Mesh(new THREE.BoxGeometry(w + 0.9, 0.55, d + 0.9), trimPaint);
       parapet.position.y = h + 0.48;
       const parapetCut = new THREE.Mesh(new THREE.BoxGeometry(w + 0.2, 0.6, d + 0.2), darkConcrete);
       parapetCut.position.y = h + 0.48;
-      const floor = new THREE.Mesh(new THREE.BoxGeometry(w, 0.22, d), darkConcrete);
+      // Stained tactical floor — overlays in interiors.ts add hazard stripes.
+      const interiorFloor = makeMaterial(0x2c2a26, 0.97, 0.02);
+      const floor = new THREE.Mesh(new THREE.BoxGeometry(w, 0.22, d), interiorFloor);
       floor.position.y = 0.11;
       const fascia = new THREE.Mesh(new THREE.BoxGeometry(w + 0.2, 0.28, 0.2), safetyPaint);
       fascia.position.set(0, h * 0.92, -d / 2 - 0.35);
       const shellMeshes = [back, left, right, frontA, frontB, lintel, roof, parapet, floor, fascia];
-      // East warehouse is the playable interior; leave its roller doorway open.
-      if (buildingIndex !== 1) shellMeshes.push(doorFrame, door);
+      // Every shell has a real segmented doorway. Walls remain collidable, but
+      // players can use the visible opening to enter and leave each interior.
       shellMeshes.forEach((m) => {
         m.castShadow = true;
         m.receiveShadow = true;
@@ -1413,13 +1783,36 @@ export default function BradleysDarkSectorThreeJS() {
       });
       group.add(parapetCut);
 
+      // Doorframe metal trim — reads as a roller-bay opening.
+      const doorFrameMat = paintedMetal;
+      const doorW = w * 0.34;
+      const doorH = h * 0.62;
+      for (const side of [-1, 1]) {
+        const jamb = new THREE.Mesh(new THREE.BoxGeometry(0.18, doorH, 0.22), doorFrameMat);
+        jamb.position.set(side * (doorW * 0.52), doorH / 2, -d / 2 - 0.12);
+        jamb.castShadow = true;
+        group.add(jamb);
+      }
+      const header = new THREE.Mesh(new THREE.BoxGeometry(doorW + 0.35, 0.2, 0.22), doorFrameMat);
+      header.position.set(0, doorH + 0.08, -d / 2 - 0.12);
+      group.add(header);
+      // Raised roller shutter panel above the opening (visual only — passage stays open).
+      const shutter = new THREE.Mesh(
+        new THREE.BoxGeometry(doorW * 0.92, h * 0.18, 0.1),
+        makeMaterial(0x3a423c, 0.55, 0.45),
+      );
+      shutter.position.set(0, h * 0.72, -d / 2 - 0.2);
+      group.add(shutter);
+
+      const isHangar = Math.abs(x) < 1 && z < -40;
+      const windowLit = isHangar ? warmWindow : litWindow;
       for (const side of [-1, 1]) {
         for (const row of [0.38, 0.68]) {
-          const window = new THREE.Mesh(new THREE.BoxGeometry(w * 0.14, 0.9, 0.08), side > 0 ? litWindow : warmWindow);
+          const window = new THREE.Mesh(new THREE.BoxGeometry(w * 0.14, 0.9, 0.08), side > 0 || isHangar ? windowLit : warmWindow);
           window.position.set(side * w * 0.28, h * row, -d / 2 - 0.27);
           group.add(window);
         }
-        const sideWindow = new THREE.Mesh(new THREE.BoxGeometry(0.08, 1.05, d * 0.16), litWindow);
+        const sideWindow = new THREE.Mesh(new THREE.BoxGeometry(0.08, 1.05, d * 0.16), windowLit);
         sideWindow.position.set(side * (w / 2 + 0.28), h * 0.55, d * 0.05);
         group.add(sideWindow);
       }
@@ -1430,9 +1823,6 @@ export default function BradleysDarkSectorThreeJS() {
       dish.position.set(-w * 0.25, h + 0.75, -d * 0.1);
       dish.rotation.x = 0.4;
       group.add(dish);
-      const interiorGlow = new THREE.PointLight(0x9fd6c2, 1.4, 14, 2);
-      interiorGlow.position.set(0, h * 0.55, 0);
-      group.add(interiorGlow);
 
       for (let i = 0; i < 6; i += 1) {
         const rubble = new THREE.Mesh(new THREE.DodecahedronGeometry(0.22 + Math.random() * 0.35), darkConcrete);
@@ -1485,6 +1875,11 @@ export default function BradleysDarkSectorThreeJS() {
       roof.position.y = 8.55;
       roof.rotation.y = Math.PI / 4;
       tower.add(roof);
+      const sandbagRing = makeSandbagWall(createFallbackEnvTextures(), 3.2, 1.0);
+      tower.add(sandbagRing);
+      const towerWire = makeConcertinaWire(2.6, mobile ? 6 : 10);
+      towerWire.position.set(0, 6.6, index < 2 ? 1.5 : -1.5);
+      tower.add(towerWire);
       const flood = new THREE.SpotLight(0xe8f4ff, 18, 72, Math.PI / 5.5, 0.45, 0.95);
       flood.position.set(0, 8, 0);
       flood.target.position.set(-x * 0.35, 0, -z * 0.35);
@@ -1494,7 +1889,7 @@ export default function BradleysDarkSectorThreeJS() {
       colliders.push(new THREE.Box3().setFromCenterAndSize(new THREE.Vector3(x, 3.2, z), new THREE.Vector3(3.5, 6.5, 3.5)));
     });
 
-    const gateZ = wall - 6;
+    const gateZ = wall;
     for (const x of [-7, 7]) {
       addStatic(scene, colliders, makeWall(2.1, 6.2, 2.1, 0x303832), x, 3.1, gateZ);
     }
@@ -1505,57 +1900,135 @@ export default function BradleysDarkSectorThreeJS() {
     const gateLight = new THREE.PointLight(0x8de6ff, 6.5, 30);
     gateLight.position.set(0, 5.3, gateZ - 2.5);
     scene.add(gateLight);
+    const checkpointBooth = new THREE.Group();
+    checkpointBooth.position.set(-6.5, 0, gateZ - 1.2);
+    const boothBody = new THREE.Mesh(new THREE.BoxGeometry(2.4, 2.5, 2.4), makeMaterial(0xc4b8a0, 0.88, 0.05));
+    boothBody.position.y = 1.25;
+    boothBody.castShadow = true;
+    checkpointBooth.add(boothBody);
+    const boothRoof = new THREE.Mesh(new THREE.BoxGeometry(2.8, 0.18, 2.8), makeMaterial(0x3a4038, 0.7, 0.35));
+    boothRoof.position.y = 2.6;
+    checkpointBooth.add(boothRoof);
+    const boothWindow = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.8, 0.08), litWindow);
+    boothWindow.position.set(0, 1.45, -1.24);
+    checkpointBooth.add(boothWindow);
+    const boothSign = new THREE.Mesh(
+      new THREE.BoxGeometry(1.6, 0.28, 0.06),
+      makeMaterial(0xd4a017, 0.7, 0.15),
+    );
+    boothSign.position.set(0, 2.15, -1.26);
+    checkpointBooth.add(boothSign);
+    scene.add(checkpointBooth);
+    colliders.push(new THREE.Box3().setFromObject(checkpointBooth));
 
-    for (let z = -(wall - 16); z <= wall - 12; z += 10) {
+    const lampStep = mobile ? 20 : 10;
+    for (let z = -(wall - 16); z <= wall - 12; z += lampStep) {
       for (const x of [-8.5, 8.5]) {
         const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.11, 4.4, 10), paintedMetal);
         pole.position.set(x, 2.2, z);
-        pole.castShadow = true;
+        pole.castShadow = !mobile;
         scene.add(pole);
         const lamp = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.2, 0.32), litWindow);
         lamp.position.set(x, 4.35, z);
         scene.add(lamp);
-        const light = new THREE.PointLight(0xd7efff, 3.4, 20, 1.55);
-        light.position.set(x, 4.15, z);
-        scene.add(light);
+        // Every other lamp gets a real light on mobile/Quest — emissive mesh still sells the look.
+        if (!mobile || ((z / lampStep) | 0) % 2 === 0) {
+          const light = new THREE.PointLight(0xd7efff, mobile ? 2.2 : 3.4, mobile ? 14 : 20, 1.55);
+          light.position.set(x, 4.15, z);
+          scene.add(light);
+        }
       }
     }
 
-    for (let i = 0; i < 28; i += 1) {
-      const crater = new THREE.Mesh(new THREE.CircleGeometry(1.4 + Math.random() * 2.8, 28), new THREE.MeshBasicMaterial({ color: 0x050403, transparent: true, opacity: 0.55, depthWrite: false }));
+    for (let i = 0; i < (mobile ? 12 : 28); i += 1) {
+      const crater = new THREE.Mesh(new THREE.CircleGeometry(1.4 + Math.random() * 2.8, mobile ? 12 : 28), new THREE.MeshBasicMaterial({ color: 0x050403, transparent: true, opacity: 0.55, depthWrite: false }));
       crater.rotation.x = -Math.PI / 2;
       crater.position.set((Math.random() - 0.5) * (wallLen - 20), 0.018, (Math.random() - 0.5) * (wallLen - 20));
       scene.add(crater);
     }
 
-    const firePositions: Array<[number, number]> = [
-      [-18, -21],
-      [19, -12],
-      [-24, 18],
-      [8, 24],
-      [26, 6],
-      [-40, -36],
-      [42, 20],
-      [0, -40],
-    ];
-    firePositions.forEach(([x, z]) => {
+    const firePositions: Array<[number, number]> = mobile
+      ? [
+          [-18, -21],
+          [19, -12],
+          [8, 24],
+          [0, -40],
+        ]
+      : [
+          [-18, -21],
+          [19, -12],
+          [-24, 18],
+          [8, 24],
+          [26, 6],
+          [-40, -36],
+          [42, 20],
+          [0, -40],
+        ];
+    firePositions.forEach(([x, z], index) => {
       const fireGroup = new THREE.Group();
       fireGroup.position.set(x, 0, z);
       fireGroup.userData.fire = true;
       const base = new THREE.Mesh(new THREE.CylinderGeometry(0.65, 0.9, 0.22, 14), makeMaterial(0x090806, 0.95, 0.05));
       base.position.y = 0.12;
       fireGroup.add(base);
-      for (let i = 0; i < 4; i += 1) {
+      const flameCount = mobile ? 2 : 4;
+      for (let i = 0; i < flameCount; i += 1) {
         const flame = new THREE.Mesh(new THREE.ConeGeometry(0.35 + Math.random() * 0.25, 1.2 + Math.random() * 0.9, 12), new THREE.MeshBasicMaterial({ color: 0xff6a00, transparent: true, opacity: 0.78 }));
         flame.position.set((Math.random() - 0.5) * 0.55, 0.65 + Math.random() * 0.45, (Math.random() - 0.5) * 0.55);
         fireGroup.add(flame);
       }
-      const light = new THREE.PointLight(0xff5a00, 4.2, 16);
-      light.position.set(0, 1.6, 0);
-      light.userData.fireLight = true;
-      fireGroup.add(light);
+      // Point lights are a major cost — one fire light max on low/mobile paths.
+      if (!mobile || index < 1) {
+        const light = new THREE.PointLight(0xff5a00, mobile ? 1.6 : 2.2, mobile ? 8 : 12);
+        light.position.set(0, 1.6, 0);
+        light.userData.fireLight = true;
+        fireGroup.add(light);
+      }
       scene.add(fireGroup);
     });
+
+    // Battle damage — wrecks and breach sandbags thickening the contested yard.
+    const envTextures = createFallbackEnvTextures();
+    const wreckPositions: Array<[number, number, number]> = [
+      [-14, -10, 0.35],
+      [16, 8, -0.55],
+      [-6, 18, 1.1],
+      [22, -28, -0.2],
+    ];
+    wreckPositions.forEach(([x, z, rotY]) => {
+      const wreck = new THREE.Group();
+      const body = new THREE.Mesh(new THREE.BoxGeometry(4, 1.5, 2), makeMaterial(0x3a3530, 0.9, 0.1));
+      body.position.y = 1;
+      body.rotation.z = (Math.random() - 0.5) * 0.1;
+      wreck.add(body);
+      const cab = new THREE.Mesh(new THREE.BoxGeometry(1.6, 1.2, 1.8), makeMaterial(0x2a2520, 0.92, 0.08));
+      cab.position.set(-1.9, 0.9, 0);
+      wreck.add(cab);
+      const scorch = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.4, 0.5), makeMaterial(0x121010, 0.95, 0));
+      scorch.position.set(0.5, 1.35, 0.3);
+      wreck.add(scorch);
+      wreck.rotation.y = rotY;
+      addStatic(scene, colliders, wreck, x, 0, z);
+    });
+    (
+      [
+        [-15, -9, 0.2],
+        [15, 7, Math.PI],
+        [-7, 17, 0],
+        [0, -38, 0],
+        [-24, 2, Math.PI / 2],
+        [24, -4, -Math.PI / 2],
+      ] as Array<[number, number, number]>
+    ).forEach(([x, z, rot]) => {
+      const bags = makeSandbagWall(envTextures, 3.6);
+      bags.rotation.y = rot;
+      addStatic(scene, colliders, bags, x, 0, z);
+    });
+    if (!mobile) {
+      const breachWire = makeConcertinaWire(10, 10);
+      breachWire.position.set(0, 5.05, 44);
+      scene.add(breachWire);
+    }
   }
 
   function makeGame(container: HTMLDivElement): GameState {
@@ -1569,57 +2042,100 @@ export default function BradleysDarkSectorThreeJS() {
     const camera = new THREE.PerspectiveCamera(savedSettings.fov, container.clientWidth / container.clientHeight, 0.1, 600);
     camera.position.set(0, 2.2, 7);
 
-    const renderer = new THREE.WebGLRenderer({ antialias: !mobile && savedSettings.graphics !== "low" });
+    const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: "high-performance" });
     renderer.setSize(container.clientWidth, container.clientHeight);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, mobile ? 1.25 : gfx.pixelRatioCap));
-    renderer.shadowMap.enabled = !mobile && savedSettings.graphics !== "low";
-    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, mobile ? 1.1 : gfx.pixelRatioCap));
+    renderer.shadowMap.enabled = Boolean(gfx.enableShadows) && !mobile;
+    renderer.shadowMap.type = THREE.BasicShadowMap;
+    renderer.shadowMap.autoUpdate = false;
+    renderer.shadowMap.needsUpdate = Boolean(gfx.enableShadows) && !mobile;
     renderer.outputColorSpace = THREE.SRGBColorSpace;
-    renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.28;
+    // ACES is expensive on integrated GPUs; Reinhard keeps contrast with less cost.
+    renderer.toneMapping =
+      savedSettings.graphics === "high" ? THREE.ACESFilmicToneMapping : THREE.ReinhardToneMapping;
+    renderer.toneMappingExposure = savedSettings.graphics === "high" ? 1.15 : 1.05;
     container.appendChild(renderer.domElement);
 
-    scene.add(new THREE.HemisphereLight(0x9aa8b4, 0x2f281c, 1.05));
-    const moon = new THREE.DirectionalLight(0xffe6c4, 2.65);
+    const compoundMapRoot = new THREE.Group();
+    compoundMapRoot.name = "CompoundMap";
+    scene.add(compoundMapRoot);
+
+    const hemisphereLight = new THREE.HemisphereLight(0x9aa8b4, 0x2f281c, 1.15);
+    scene.add(hemisphereLight);
+    const moon = new THREE.DirectionalLight(0xffe6c4, 2.85);
     moon.position.set(-18, 28, 12);
-    moon.castShadow = !mobile && savedSettings.graphics !== "low";
+    moon.castShadow = Boolean(gfx.enableShadows) && !mobile;
     moon.shadow.mapSize.set(gfx.shadowMapSize, gfx.shadowMapSize);
-    moon.shadow.camera.left = -70;
-    moon.shadow.camera.right = 70;
-    moon.shadow.camera.top = 70;
-    moon.shadow.camera.bottom = -70;
-    scene.add(moon);
-    const redAlarm = new THREE.PointLight(0xff1f1f, 2.8, 32);
-    redAlarm.position.set(9, 5, -14);
-    scene.add(redAlarm);
-    const blueLight = new THREE.PointLight(0x38bdf8, 2.2, 30);
-    blueLight.position.set(-8, 4, 8);
-    scene.add(blueLight);
-    const fill = new THREE.AmbientLight(0x4a5248, 0.58);
-    scene.add(fill);
-    const yardFill = new THREE.PointLight(0xc9d6c4, 2.8, 58, 1.4);
+    moon.shadow.camera.left = -40;
+    moon.shadow.camera.right = 40;
+    moon.shadow.camera.top = 40;
+    moon.shadow.camera.bottom = -40;
+    compoundMapRoot.add(moon);
+    // Skip decorative RGB point lights on medium/low — they dominate fill-rate.
+    if (savedSettings.graphics === "high" && !mobile) {
+      const redAlarm = new THREE.PointLight(0xff1f1f, 1.6, 18);
+      redAlarm.position.set(9, 5, -14);
+      compoundMapRoot.add(redAlarm);
+      const blueLight = new THREE.PointLight(0x38bdf8, 1.4, 16);
+      blueLight.position.set(-8, 4, 8);
+      compoundMapRoot.add(blueLight);
+    }
+    const fill = new THREE.AmbientLight(0x4a5248, 0.72);
+    compoundMapRoot.add(fill);
+    const yardFill = new THREE.PointLight(0xc9d6c4, savedSettings.graphics === "high" ? 2.0 : 1.4, 36, 1.6);
     yardFill.position.set(0, 10, 6);
-    scene.add(yardFill);
+    compoundMapRoot.add(yardFill);
 
     const groundTex = new THREE.CanvasTexture(makeGroundTexture());
     groundTex.wrapS = THREE.RepeatWrapping;
     groundTex.wrapT = THREE.RepeatWrapping;
     groundTex.repeat.set(22, 22);
-    const ground = new THREE.Mesh(new THREE.PlaneGeometry(COMPOUND_GROUND_SIZE, COMPOUND_GROUND_SIZE, 96, 96), new THREE.MeshStandardMaterial({ map: groundTex, roughness: 0.98, metalness: 0.02, bumpMap: groundTex, bumpScale: 0.05 }));
+    const groundSegs = mobile || savedSettings.graphics !== "high" ? 24 : 40;
+    const ground = new THREE.Mesh(
+      new THREE.PlaneGeometry(COMPOUND_GROUND_SIZE, COMPOUND_GROUND_SIZE, groundSegs, groundSegs),
+      new THREE.MeshStandardMaterial({
+        map: groundTex,
+        roughness: 0.98,
+        metalness: 0.02,
+        bumpMap: savedSettings.graphics === "high" ? groundTex : null,
+        bumpScale: 0.03,
+      }),
+    );
     ground.rotation.x = -Math.PI / 2;
-    ground.receiveShadow = true;
-    scene.add(ground);
-    scene.add(makeDustField());
-    scene.add(makeSmokeLayer());
+    ground.receiveShadow = Boolean(gfx.enableShadows);
+    compoundMapRoot.add(ground);
+    const dustBudget =
+      mobile || savedSettings.graphics === "low"
+        ? 0
+        : savedSettings.graphics === "medium"
+          ? 90
+          : 180;
+    const dust = dustBudget > 0 ? makeDustField(dustBudget) : null;
+    const smoke = makeSmokeLayer(mobile || savedSettings.graphics !== "high" ? 2 : 4);
+    if (dust) compoundMapRoot.add(dust);
+    compoundMapRoot.add(smoke);
 
     const colliders: THREE.Box3[] = [];
-    addEnvironment(scene, colliders);
+    const compoundScene = compoundMapRoot as unknown as THREE.Scene;
+    addEnvironment(compoundScene, colliders, mobile);
     const destruction = new DestructionSystem(scene, colliders);
-    createWarehouseInterior(scene, colliders, destruction);
+    createWarehouseInterior(compoundScene, colliders, destruction);
     // Place yard combat cover immediately so wave-1 spawns can use sandbags/Jersey
     // instead of waiting on texture downloads.
-    addCombatCoverToCompound(scene, colliders, createFallbackEnvTextures());
+    addCombatCoverToCompound(compoundScene, colliders, createFallbackEnvTextures());
+    addMilitaryFobDressing(compoundScene, colliders, createFallbackEnvTextures(), mobile);
     scene.userData.combatCoverReady = true;
+    // Drop pouch/rubble-sized shadow casters — they dominate GPU cost without reading.
+    pruneTinyShadowCasters(compoundMapRoot);
+    limitPointLights(compoundMapRoot, gfx.maxPointLights);
+    if (!gfx.enableShadows) {
+      scene.traverse((obj) => {
+        if (obj instanceof THREE.Mesh) {
+          obj.castShadow = false;
+          obj.receiveShadow = false;
+        }
+      });
+    }
 
     const player = new THREE.Group();
     player.name = "Bradley FPS Controller";
@@ -1631,10 +2147,10 @@ export default function BradleysDarkSectorThreeJS() {
     const smgView = makeWeaponView();
     smgView.scale.set(0.82, 0.82, 0.72);
     smgView.position.set(0.5, -0.52, -1);
-    smgView.visible = false;
     const pistolView = makePistolView();
-    pistolView.visible = false;
     camera.add(m4View, smgView, pistolView);
+    // Crosshair-only aiming: keep FPS meshes parented but never drawn.
+    applyPlayerWeaponVisibility({ m4: m4View, smg: smgView, pistol: pistolView });
     scene.add(camera);
 
     const allies: THREE.Group[] = [];
@@ -1647,14 +2163,31 @@ export default function BradleysDarkSectorThreeJS() {
     });
 
     const combatFx = createCombatFx(scene);
-    const atmosphere = initAtmosphere(scene, gfx.volumetricFog);
+    const atmosphere = initAtmosphere(scene, gfx.volumetricFog, {
+      lowPower: mobile || savedSettings.graphics !== "high",
+      debrisCount: mobile ? 40 : savedSettings.graphics === "low" ? 50 : savedSettings.graphics === "medium" ? 70 : 110,
+      rainIntensityScale: mobile || savedSettings.graphics !== "high" ? 0.3 : 0.55,
+    });
     setWeather(atmosphere, scene, "clear_night");
+    // One-time registration — updateAtmosphereSystem no longer traverses the full scene.
+    scene.traverse((obj) => {
+      if (obj.userData.fire) registerAtmosphereFx(atmosphere, "fire", obj);
+      if (obj.userData.fireLight && obj instanceof THREE.PointLight) {
+        registerAtmosphereFx(atmosphere, "fireLight", obj);
+      }
+      if (obj.userData.spin) registerAtmosphereFx(atmosphere, "spin", obj);
+      if (obj.userData.smoke) registerAtmosphereFx(atmosphere, "smoke", obj);
+    });
 
     const state: GameState = {
       scene,
       camera,
       renderer,
-      clock: new THREE.Clock(),
+      clock: (() => {
+        const timer = new THREE.Timer();
+        timer.connect(document);
+        return timer;
+      })(),
       player,
       weapon: m4View,
       weaponViews: { m4: m4View, smg: smgView, pistol: pistolView },
@@ -1669,6 +2202,7 @@ export default function BradleysDarkSectorThreeJS() {
       grenadesRemaining: 3,
       colliders,
       health: 100,
+      maxHealth: 100,
       ammo: 30,
       maxAmmo: 30,
       score: 0,
@@ -1678,13 +2212,16 @@ export default function BradleysDarkSectorThreeJS() {
       yaw: 0,
       pitch: 0,
       recoil: 0,
+      recoilYaw: 0,
       running: false,
       disposed: false,
       enemyTemplate: null,
+      enemyTemplatePromise: null,
       enemyAnimations: [],
       fbxClips: {},
       mixers: [],
       enemyModelLoaded: false,
+      waveContentToken: 0,
       fbxModeLoaded: false,
       killStreak: 0,
       bestStreak: 0,
@@ -1693,6 +2230,10 @@ export default function BradleysDarkSectorThreeJS() {
       lastMissionTime: "00:00",
       playerDamageCooldown: 0,
       enemyVolleyCooldown: 0,
+      enemyGrenadeLockUntil: 0,
+      playerStationarySec: 0,
+      lastPlayerX: 0,
+      lastPlayerZ: 10,
       gameMode: "solo",
       pvpKills: 0,
       pvpDeaths: 0,
@@ -1707,6 +2248,7 @@ export default function BradleysDarkSectorThreeJS() {
       lastDamageBearing: null,
       combatFx,
       atmosphere,
+      battlefieldChaos: initBattlefieldChaos(),
       activeMission: null,
       coverPoints: [],
       squads: [],
@@ -1719,6 +2261,7 @@ export default function BradleysDarkSectorThreeJS() {
       footstepAccum: 0,
       nextDistantFireAt: 12,
       nextCalloutAt: 8,
+      nextPressureSpawnAt: 0,
       difficulty: "operator",
       sessionKills: 0,
       interactPulse: false,
@@ -1730,10 +2273,40 @@ export default function BradleysDarkSectorThreeJS() {
       dyingEnemies: [],
       shootingRange: null,
       compoundColliders: colliders,
+      compoundMapRoot,
+      activeSceneId: "compound",
+      altSceneSession: null,
+      spawnHalf: COMPOUND_SPAWN_HALF,
+      hemisphereLight,
+      pickups: createPickupSession(compoundMapRoot, mobile),
+      pickupPrompt: null,
       xr: null,
       destruction,
-      quality: new DynamicQualityGovernor(renderer, mobile ? 1.25 : gfx.pixelRatioCap, !mobile),
+      quality: new DynamicQualityGovernor(
+        renderer,
+        mobile ? 1.25 : gfx.pixelRatioCap,
+        true,
+        mobile ? "mobile" : "desktop",
+      ),
+      extractionHeli: null,
+      extractReinforceAt: 0,
+      extractAnnouncedPhase: -1,
+      extractSucceeded: false,
+      extractCinematic: false,
+      alliedNpcState: createAlliedNpcState(),
     };
+
+    destruction.atmosphere = atmosphere;
+
+    const extractionHeli = createExtractionHelicopter();
+    state.scene.add(extractionHeli.root);
+    state.extractionHeli = extractionHeli;
+    // Desktop: keep the authored procedural bird (open cabin + seats). GLB is optional
+    // detail LOD — only swap when it includes a CabinFloor and we still inject seats if needed.
+    const wantGlb = false;
+    if (wantGlb) {
+      void upgradeExtractionHelicopterToGlb(extractionHeli, { enabled: true }).catch(() => undefined);
+    }
 
     state.coverPoints = buildCoverPointsFromColliders(colliders);
     loadEnemyTemplate(state);
@@ -1761,22 +2334,73 @@ export default function BradleysDarkSectorThreeJS() {
       .then(() => {
         if (state.disposed) return;
         state.coverPoints = buildCoverPointsFromColliders(colliders);
+        pruneTinyShadowCasters(scene);
+        limitPointLights(scene, graphicsConfig(isTouchDevice() ? "low" : state.settings.graphics).maxPointLights);
       })
       .catch((error) => {
         console.warn("[BDS] Imported environment assets failed to load", error);
       });
 
     // QA/playtest hook — used by Playwright scripts to inspect runtime state.
-    (window as unknown as { __darkSector?: GameState }).__darkSector = state;
+    (window as unknown as { __darkSector?: GameState & { completeExtractionVictory?: (s: GameState) => void; syncWeaponGrip?: typeof syncEnemyWeaponGrip } }).__darkSector = state;
+    (window as unknown as { __darkSector?: { completeExtractionVictory?: (s: GameState) => void; syncWeaponGrip?: typeof syncEnemyWeaponGrip } }).__darkSector!.completeExtractionVictory =
+      completeExtractionVictory;
+    (window as unknown as { __darkSector?: { syncWeaponGrip?: typeof syncEnemyWeaponGrip } }).__darkSector!.syncWeaponGrip = syncEnemyWeaponGrip;
     return state;
   }
 
-  function spawnEnemy(state: GameState) {
+  function clampSpawnCoord(state: GameState, value: number) {
+    return THREE.MathUtils.clamp(value, -state.spawnHalf, state.spawnHalf);
+  }
+
+  function activateCombatScene(state: GameState, sceneId: CombatSceneId) {
+    if (state.altSceneSession && state.altSceneSession.id !== sceneId) {
+      state.scene.remove(state.altSceneSession.root);
+      state.altSceneSession.dispose();
+      state.altSceneSession = null;
+    }
+
+    state.activeSceneId = sceneId;
+
+    if (sceneId === "compound") {
+      state.compoundMapRoot.visible = true;
+      state.colliders = state.compoundColliders;
+      state.spawnHalf = COMPOUND_SPAWN_HALF;
+      if (state.pickups) state.pickups.root.visible = true;
+      if (state.extractionHeli) state.extractionHeli.root.visible = true;
+      applyCombatSceneAtmosphere(state.scene, state.atmosphere, "compound", state.hemisphereLight);
+    } else {
+      state.compoundMapRoot.visible = false;
+      if (state.pickups) state.pickups.root.visible = false;
+      if (state.extractionHeli) state.extractionHeli.root.visible = false;
+      if (!state.altSceneSession || state.altSceneSession.id !== sceneId) {
+        const session = buildCombatScene(sceneId, {
+          mobile: isTouchDevice(),
+          textures: createFallbackEnvTextures(),
+        });
+        if (session) {
+          state.scene.add(session.root);
+          state.altSceneSession = session;
+        }
+      }
+      if (state.altSceneSession) {
+        state.colliders = state.altSceneSession.colliders;
+        state.spawnHalf = state.altSceneSession.spawnHalf;
+      }
+      applyCombatSceneAtmosphere(state.scene, state.atmosphere, sceneId, state.hemisphereLight);
+    }
+
+    state.destruction.setColliders(state.colliders);
+    state.coverPoints = buildCoverPointsFromColliders(state.colliders);
+  }
+
+  function spawnEnemy(state: GameState, forcedType?: EnemyType) {
+    if (state.enemies.length >= MAX_ALIVE_ENEMIES()) return;
     if (!state.enemyTemplate) {
       setHud((prev) => ({ ...prev, modelMode: "Using built-in soldiers — FBX files not found in /public/models" }));
     }
 
-    const type = ENEMY_TYPES[Math.floor(Math.random() * ENEMY_TYPES.length)];
+    const type = forcedType ?? ENEMY_TYPES[Math.floor(Math.random() * ENEMY_TYPES.length)];
     const enemy = cloneEnemyFromTemplate(state, type);
 
     // Prefer spawning at/near yard cover so hostiles don't open on the open road.
@@ -1784,13 +2408,14 @@ export default function BradleysDarkSectorThreeJS() {
     let z = 0;
     let placed = false;
     const covers = state.coverPoints || [];
+    const { min: spawnMin, max: spawnMax } = spawnDistanceBand(state);
     if (covers.length) {
       const candidates = covers
         .map((c) => {
           const d = Math.hypot(c.x - state.player.position.x, c.z - state.player.position.z);
           return { c, d };
         })
-        .filter((entry) => entry.d >= 11 && entry.d <= 26)
+        .filter((entry) => entry.d >= spawnMin && entry.d <= spawnMax)
         .sort((a, b) => a.d - b.d);
       const pool = candidates.length ? candidates.slice(0, Math.min(28, candidates.length)) : [];
       for (let attempt = 0; attempt < 10 && pool.length; attempt += 1) {
@@ -1801,14 +2426,17 @@ export default function BradleysDarkSectorThreeJS() {
         const len = Math.hypot(awayX, awayZ) || 1;
         const px = pick.x + (awayX / len) * (0.7 + Math.random() * 0.6);
         const pz = pick.z + (awayZ / len) * (0.7 + Math.random() * 0.6);
-        const clampedX = THREE.MathUtils.clamp(px, -COMPOUND_SPAWN_HALF, COMPOUND_SPAWN_HALF);
-        const clampedZ = THREE.MathUtils.clamp(pz, -COMPOUND_SPAWN_HALF, COMPOUND_SPAWN_HALF);
+        const clampedX = clampSpawnCoord(state, px);
+        const clampedZ = clampSpawnCoord(state, pz);
         if (!canMoveTo(state, new THREE.Vector3(clampedX, 0, clampedZ))) continue;
         if (Math.hypot(clampedX - state.player.position.x, clampedZ - state.player.position.z) < 9) continue;
         x = clampedX;
         z = clampedZ;
         enemy.userData.coverTarget = pick;
-        enemy.userData.coverLockUntil = state.clock.elapsedTime + 5;
+        // Short initial dwell so spawn-at-cover still peeks, then relocates.
+        enemy.userData.coverLockUntil = state.clock.getElapsed() + 2.4;
+        enemy.userData.coverArrivedAt = state.clock.getElapsed();
+        enemy.userData.repositionUntil = state.clock.getElapsed() + 1.8 + Math.random();
         placed = true;
         break;
       }
@@ -1819,31 +2447,23 @@ export default function BradleysDarkSectorThreeJS() {
       const forwardYaw = state.yaw;
       const arcHalf = Math.PI * 0.42;
       const spawnYaw = forwardYaw + (Math.random() * 2 - 1) * arcHalf;
-      const dist = 12 + Math.random() * 10;
+      const dist = spawnMin + Math.random() * (spawnMax - spawnMin);
       x = state.player.position.x + Math.sin(spawnYaw) * dist;
       z = state.player.position.z - Math.cos(spawnYaw) * dist;
-      x = THREE.MathUtils.clamp(x, -COMPOUND_SPAWN_HALF, COMPOUND_SPAWN_HALF);
-      z = THREE.MathUtils.clamp(z, -COMPOUND_SPAWN_HALF, COMPOUND_SPAWN_HALF);
+      x = clampSpawnCoord(state, x);
+      z = clampSpawnCoord(state, z);
       if (Math.hypot(x - state.player.position.x, z - state.player.position.z) < 8) {
         x = state.player.position.x + Math.sin(spawnYaw) * 14;
         z = state.player.position.z - Math.cos(spawnYaw) * 14;
-        x = THREE.MathUtils.clamp(x, -COMPOUND_SPAWN_HALF, COMPOUND_SPAWN_HALF);
-        z = THREE.MathUtils.clamp(z, -COMPOUND_SPAWN_HALF, COMPOUND_SPAWN_HALF);
+        x = clampSpawnCoord(state, x);
+        z = clampSpawnCoord(state, z);
       }
       for (let attempt = 0; attempt < 6; attempt += 1) {
         const probe = new THREE.Vector3(x, 0, z);
         if (canMoveTo(state, probe)) break;
         const nudgeYaw = spawnYaw + (attempt + 1) * 0.55;
-        x = THREE.MathUtils.clamp(
-          state.player.position.x + Math.sin(nudgeYaw) * (14 + attempt),
-          -COMPOUND_SPAWN_HALF,
-          COMPOUND_SPAWN_HALF
-        );
-        z = THREE.MathUtils.clamp(
-          state.player.position.z - Math.cos(nudgeYaw) * (14 + attempt),
-          -COMPOUND_SPAWN_HALF,
-          COMPOUND_SPAWN_HALF
-        );
+        x = clampSpawnCoord(state, state.player.position.x + Math.sin(nudgeYaw) * (14 + attempt));
+        z = clampSpawnCoord(state, state.player.position.z - Math.cos(nudgeYaw) * (14 + attempt));
       }
     }
 
@@ -1900,19 +2520,49 @@ export default function BradleysDarkSectorThreeJS() {
     return { position: from.clone(), moved: false, stuck: true };
   }
 
+  const _losFrom = new THREE.Vector3();
+  const _losTo = new THREE.Vector3();
+  const _losDelta = new THREE.Vector3();
+  let losCacheFrame = -1;
+  const losCache = new Map<string, boolean>();
+
   function hasLineOfSight(state: GameState, from: THREE.Vector3, to: THREE.Vector3) {
-    const offsetFrom = from.clone().add(new THREE.Vector3(0, 1.5, 0));
-    const offsetTo = to.clone().add(new THREE.Vector3(0, 1.6, 0));
-    const delta = offsetTo.clone().sub(offsetFrom);
-    const dist = delta.length();
-    if (dist < 0.2) return true;
-    const dir = delta.normalize();
-    return raycastColliders(state.colliders, offsetFrom, dir, Math.max(0, dist - 0.3)) == null;
+    const frame = state.renderer.info.render.frame;
+    if (frame !== losCacheFrame) {
+      losCacheFrame = frame;
+      losCache.clear();
+    }
+    const key = `${from.x.toFixed(1)},${from.z.toFixed(1)}>${to.x.toFixed(1)},${to.z.toFixed(1)}`;
+    const cached = losCache.get(key);
+    if (cached !== undefined) return cached;
+
+    _losFrom.set(from.x, from.y + 1.5, from.z);
+    _losTo.set(to.x, to.y + 1.6, to.z);
+    _losDelta.copy(_losTo).sub(_losFrom);
+    const dist = _losDelta.length();
+    if (dist < 0.2) {
+      losCache.set(key, true);
+      return true;
+    }
+    _losDelta.multiplyScalar(1 / dist);
+    const clear = raycastColliders(state.colliders, _losFrom, _losDelta, Math.max(0, dist - 0.3)) == null;
+    losCache.set(key, clear);
+    return clear;
   }
 
-  function flashHitMarker() {
-    setHitFlash(true);
-    window.setTimeout(() => setHitFlash(false), 90);
+  function effectiveFxQuality(state: GameState) {
+    const preset = state.xr?.presenting
+      ? xrGraphicsConfig().particles
+      : graphicsConfig(isTouchDevice() ? "low" : state.settings.graphics).particles;
+    return preset * state.quality.getFxScale();
+  }
+
+  function flashHitMarker(kind: HitMarkerKind = "hit") {
+    setHitMarker(kind);
+    gameRef.current?.xr?.reticle.flashHit(kind);
+    if (hitMarkerTimerRef.current != null) window.clearTimeout(hitMarkerTimerRef.current);
+    const duration = kind === "kill" ? 220 : kind === "armor" ? 120 : 90;
+    hitMarkerTimerRef.current = window.setTimeout(() => setHitMarker(null), duration);
   }
 
   function getDamageBearing(state: GameState, from: THREE.Vector3): DamageBearing {
@@ -1963,7 +2613,50 @@ export default function BradleysDarkSectorThreeJS() {
     if (recentlySeen) return true;
     // Unseen rear/side shooters may intimidate with tracers but deal no HP.
     if (!isEnemyInForwardHemisphere(state, enemy)) return false;
-    return distance <= 11;
+    return distance <= 9;
+  }
+
+  function canEnemyThrowGrenadeType(typeName: string): boolean {
+    return typeName === "Heavy" || typeName === "Commander";
+  }
+
+  function soloEnemyDamage(amount: number, gameMode: GameMode): number {
+    if (gameMode !== "solo" || amount <= 0) return amount;
+    return Math.max(1, Math.round(amount * SOLO_ENEMY_DAMAGE_MUL));
+  }
+
+  function shouldEnemyThrowGrenade(
+    state: GameState,
+    enemy: THREE.Group,
+    distance: number,
+    steerResult: ReturnType<typeof computeEnemySteer>,
+    aiNow: number,
+  ) {
+    if (distance < ENEMY_GRENADE_MIN_RANGE || distance > ENEMY_GRENADE_MAX_RANGE) return false;
+    if (aiNow < (enemy.userData.nextGrenadeAt || Number.POSITIVE_INFINITY)) return false;
+    if (aiNow < state.enemyGrenadeLockUntil) return false;
+    if (state.grenades.some((grenade) => grenade.owner === "enemy")) return false;
+    if (!hasLineOfSight(state, enemy.position, state.player.position)) return false;
+    if (steerResult.retreating) return false;
+
+    const typeName = String(enemy.userData.enemyType || "");
+    if (!canEnemyThrowGrenadeType(typeName)) return false;
+
+    const healthRatio = state.health / Math.max(1, state.maxHealth);
+    if (healthRatio <= ENEMY_GRENADE_MIN_PLAYER_HP) return false;
+    if (state.combatFx.suppression >= ENEMY_GRENADE_MAX_SUPPRESSION) return false;
+
+    const playerCamped =
+      state.crouching
+      && state.playerStationarySec >= ENEMY_GRENADE_STATIONARY_SEC;
+    if (!playerCamped) return false;
+
+    const inCoverStance =
+      steerResult.intent === "cover"
+      || steerResult.intent === "hold";
+    if (!inCoverStance) return false;
+
+    return Math.random() < ENEMY_GRENADE_THROW_CHANCE;
   }
 
   function turnEnemyTowardPlayer(enemy: THREE.Group, player: THREE.Vector3, dt: number) {
@@ -1983,30 +2676,12 @@ export default function BradleysDarkSectorThreeJS() {
 
   function pulseEnemyMuzzleFlash(enemy: THREE.Group) {
     enemy.userData.muzzleFlashUntil = performance.now() + 90;
-
-    let flash = enemy.userData.muzzleLight as THREE.PointLight | undefined;
-    if (!flash) {
-      flash = new THREE.PointLight(0xffcc66, 4.5, 8, 2);
-      enemy.add(flash);
-      enemy.userData.muzzleLight = flash;
-    }
-    const muzzleWorld = getEnemyMuzzleWorldPos(enemy);
-    enemy.worldToLocal(flash.position.copy(muzzleWorld));
-    flash.intensity = 5;
-    flash.visible = true;
+    // Mesh/sprite flash only — per-enemy PointLights were flooding the light budget.
   }
 
   function updateEnemyMuzzleFlash(enemy: THREE.Group) {
-    const until = enemy.userData.muzzleFlashUntil || 0;
-    const flash = enemy.userData.muzzleLight as THREE.PointLight | undefined;
-    if (performance.now() > until) {
-      if (flash) {
-        flash.intensity = 0;
-        flash.visible = false;
-      }
-    } else if (flash) {
-      flash.intensity = 3.5 + Math.random() * 2;
-    }
+    // Kept for call-site compatibility; light-based muzzle FX removed for FPS.
+    void enemy;
   }
 
   function requestAimLock(element: HTMLCanvasElement) {
@@ -2022,7 +2697,219 @@ export default function BradleysDarkSectorThreeJS() {
 
   function freezeMissionTime(state: GameState) {
     if (state.missionStartedAt > 0) {
-      state.lastMissionTime = formatMissionTime(state.clock.elapsedTime - state.missionStartedAt);
+      state.lastMissionTime = formatMissionTime(state.clock.getElapsed() - state.missionStartedAt);
+    }
+  }
+
+  function applyMissionEndProgression(state: GameState, won: boolean) {
+    const playSec = state.missionStartedAt > 0 ? state.clock.getElapsed() - state.missionStartedAt : 0;
+    const prevUnlocks = new Set(progressionRef.current.unlockedAttachments);
+    const prevDiffs = new Set(progressionRef.current.unlockedDifficulties);
+    const nextStats = recordMissionEnd(progressionRef.current, {
+      kills: state.sessionKills,
+      score: state.score,
+      wave: state.wave,
+      won,
+      playSec,
+      difficulty: state.difficulty,
+    });
+    const newAttach = nextStats.unlockedAttachments.filter((id) => !prevUnlocks.has(id));
+    const newDiff = nextStats.unlockedDifficulties.filter((id) => !prevDiffs.has(id));
+    if (newAttach.length || newDiff.length) {
+      const parts = [
+        ...newAttach.map((id) => ATTACHMENTS[id]?.name || id),
+        ...newDiff.map((id) => DIFFICULTY[id]?.label || id),
+      ];
+      setUnlockToast(`UNLOCKED · ${parts.join(" · ")}`);
+      window.setTimeout(() => setUnlockToast(""), 5000);
+    }
+    setProgression(nextStats);
+    setHud((prev) => ({
+      ...prev,
+      health: won ? prev.health : 0,
+      missionTime: state.lastMissionTime || prev.missionTime,
+      rank: rankFromXp(nextStats.xp).rank,
+      score: state.score,
+      wave: state.wave,
+    }));
+  }
+
+  /** Successful helicopter extract — play land/board/flyaway, then show victory AAR. */
+  function completeExtractionVictory(state: GameState) {
+    if (state.extractSucceeded) return;
+    state.extractSucceeded = true;
+    state.extractCinematic = true;
+    freezeMissionTime(state);
+    state.running = false;
+    state.score += state.activeMission?.scoreBonus || 0;
+    if (state.extractionHeli) {
+      // Ensure bird is visible and begins landing cinematic.
+      if (state.extractionHeli.phase === "hidden") {
+        startHeliInbound(state.extractionHeli);
+        state.extractionHeli.root.position.set(
+          state.extractionHeli.lzX,
+          state.extractionHeli.hoverY,
+          state.extractionHeli.lzZ,
+        );
+      }
+      updateExtractionHelicopter(state.extractionHeli, {
+        dt: 0,
+        holdProgress: 1,
+        readyToBoard: true,
+        extracted: true,
+        fxScale: state.quality.getFxScale(),
+      });
+    }
+    clearAllEnemies(state);
+    state.audio.playRadio(extractSuccessLine(), { channel: "mission" });
+    setMissionBanner("BIRD ON THE PAD — Boarding");
+    applyMissionEndProgression(state, true);
+    if (document.pointerLockElement) document.exitPointerLock();
+    // Keep the 3D view alive for the cinematic; AAR opens after flyaway.
+    setStarted(true);
+  }
+
+  // Expose for Playwright extract cinematic tests.
+  if (typeof window !== "undefined" && (window as unknown as { __darkSector?: GameState }).__darkSector) {
+    (
+      window as unknown as {
+        __darkSector: GameState & { completeExtractionVictory?: (s: GameState) => void };
+      }
+    ).__darkSector.completeExtractionVictory = completeExtractionVictory;
+  }
+
+  function finishExtractCinematic(state: GameState) {
+    if (!state.extractCinematic) return;
+    state.extractCinematic = false;
+    setMissionBanner("EXTRACT SUCCESS — Bird outbound");
+    setMissionOutcome("extracted");
+    setGameOver(true);
+    setStarted(false);
+  }
+
+  function updateExtractCinematicCamera(state: GameState, dt: number) {
+    const heli = state.extractionHeli;
+    if (!heli || !state.extractCinematic) return;
+
+    if (heli.phase === "hidden") {
+      finishExtractCinematic(state);
+      return;
+    }
+
+    heli.root.updateMatrixWorld(true);
+    if (heli.root.userData.cinematicBanner !== heli.phase) {
+      heli.root.userData.cinematicBanner = heli.phase;
+      if (heli.phase === "land") setMissionBanner("BIRD DESCENDING — Clear the skids");
+      else if (heli.phase === "board") setMissionBanner("BOARDING — Spooling for lift-off");
+      else if (heli.phase === "depart") setMissionBanner("EXTRACT SUCCESS — Bird outbound");
+    }
+
+    const hx = heli.root.position.x;
+    const hy = heli.root.position.y;
+    const hz = heli.root.position.z;
+
+    const cabinAnchor =
+      heli.body.getObjectByName("Dash")
+      || heli.body.getObjectByName("CabinDome")
+      || heli.body.getObjectByName("HeliCabinInterior");
+    const windAnchor =
+      heli.body.getObjectByName("CabinWindshield")
+      || heli.body.getObjectByName("Windshield");
+
+    const seatWorld = new THREE.Vector3();
+    if (cabinAnchor) {
+      cabinAnchor.getWorldPosition(seatWorld);
+      if (cabinAnchor.name === "Dash") {
+        seatWorld.y += 0.55;
+        seatWorld.z -= 1.05;
+      } else if (cabinAnchor.name === "CabinDome") {
+        seatWorld.y -= 0.65;
+        seatWorld.z -= 0.35;
+      }
+    } else {
+      heli.root.localToWorld(seatWorld.copy(HELI_CABIN_CAMERA_OFFSET));
+    }
+
+    const lookWorld = new THREE.Vector3();
+    if (windAnchor) {
+      windAnchor.getWorldPosition(lookWorld);
+      lookWorld.y += 0.1;
+    } else {
+      heli.root.localToWorld(lookWorld.set(0.1, 1.7, 4.2));
+    }
+
+    if (heli.phase === "land") {
+      const lookFrom = new THREE.Vector3(heli.lzX + 10.5, 2.3, heli.lzZ + 9.5);
+      state.camera.position.lerp(lookFrom, Math.min(1, dt * 2.6));
+      state.camera.lookAt(hx, hy + 1.0, hz);
+    } else if (heli.phase === "board") {
+      state.camera.position.lerp(seatWorld, Math.min(1, dt * 7));
+      state.camera.lookAt(lookWorld);
+    } else if (heli.phase === "depart") {
+      state.camera.position.copy(seatWorld);
+      lookWorld.y += heli.phaseT * 2.2;
+      state.camera.lookAt(lookWorld);
+    } else if (heli.phase === "inbound" || heli.phase === "hover") {
+      const lookFrom = new THREE.Vector3(heli.lzX + 11, 2.6, heli.lzZ + 10);
+      state.camera.position.lerp(lookFrom, Math.min(1, dt * 2));
+      state.camera.lookAt(hx, hy + 1.2, hz);
+    }
+  }
+
+  function weaponAmmoCaps() {
+    const loadout = progressionRef.current.loadout;
+    return {
+      m4: applyAttachmentMods(WEAPONS.m4, loadout.find((l) => l.weapon === "m4")?.attachments || []).maxAmmo,
+      smg: applyAttachmentMods(WEAPONS.smg, loadout.find((l) => l.weapon === "smg")?.attachments || []).maxAmmo,
+      pistol: applyAttachmentMods(WEAPONS.pistol, loadout.find((l) => l.weapon === "pistol")?.attachments || []).maxAmmo,
+    };
+  }
+
+  function consumeMedkit(state: GameState): boolean {
+    if (!canUseMedkit(state.medkits, state.health, state.maxHealth)) return false;
+    state.medkits -= 1;
+    state.health = applyMedkitHeal(state.health, state.maxHealth);
+    state.audio.playReloadComplete();
+    return true;
+  }
+
+  function collectCompoundPickups(state: GameState, interactPressed: boolean) {
+    if (state.gameMode !== "solo" || state.activeSceneId !== "compound" || !state.pickups || !state.running) return;
+    const lowPower = isXrPresenting(state.renderer, state.xr) || isTouchDevice();
+    const result = updatePickups(state.pickups, {
+      playerX: state.player.position.x,
+      playerZ: state.player.position.z,
+      elapsed: state.clock.getElapsed(),
+      interactPressed,
+      lowPower,
+    });
+    state.pickupPrompt = result.prompt;
+    if (!result.effects.length) return;
+    const caps = weaponAmmoCaps();
+    for (const effect of result.effects) {
+      const patch = {
+        health: state.health,
+        maxHealth: state.maxHealth,
+        medkits: state.medkits,
+        grenadesRemaining: state.grenadesRemaining,
+        score: state.score,
+        activeWeapon: state.activeWeapon,
+        weaponAmmo: state.weaponAmmo,
+        ammo: state.ammo,
+        maxAmmo: state.maxAmmo,
+      };
+      const toast = applyPickupEffect(patch, effect.kind, caps);
+      state.health = patch.health;
+      state.medkits = patch.medkits;
+      state.grenadesRemaining = patch.grenadesRemaining;
+      state.score = patch.score;
+      state.weaponAmmo = patch.weaponAmmo as Record<WeaponId, number>;
+      state.ammo = patch.ammo;
+      state.maxAmmo = patch.maxAmmo;
+      if (toast) {
+        setMissionBanner(`${effect.label.toUpperCase()} — ${toast}`);
+        window.setTimeout(() => setMissionBanner(""), 2400);
+      }
     }
   }
 
@@ -2031,7 +2918,7 @@ export default function BradleysDarkSectorThreeJS() {
     if (state.gameMode === "range") return;
     if (state.gameMode === "pvp" && !state.pvpAlive) return;
     state.health -= amount;
-    state.playerDamageCooldown = 0.65;
+    state.playerDamageCooldown = PLAYER_DAMAGE_COOLDOWN;
     state.killStreak = 0;
     if (from) {
       state.lastDamageBearing = getDamageBearing(state, from);
@@ -2052,35 +2939,9 @@ export default function BradleysDarkSectorThreeJS() {
       }
       freezeMissionTime(state);
       state.running = false;
-      const playSec = state.missionStartedAt > 0 ? state.clock.elapsedTime - state.missionStartedAt : 0;
-      const prevUnlocks = new Set(progression.unlockedAttachments);
-      const prevDiffs = new Set(progression.unlockedDifficulties);
-      const nextStats = recordMissionEnd(progression, {
-        kills: state.sessionKills,
-        score: state.score,
-        wave: state.wave,
-        won: false,
-        playSec,
-        difficulty: state.difficulty,
-      });
-      const newAttach = nextStats.unlockedAttachments.filter((id) => !prevUnlocks.has(id));
-      const newDiff = nextStats.unlockedDifficulties.filter((id) => !prevDiffs.has(id));
-      if (newAttach.length || newDiff.length) {
-        const parts = [
-          ...newAttach.map((id) => ATTACHMENTS[id]?.name || id),
-          ...newDiff.map((id) => DIFFICULTY[id]?.label || id),
-        ];
-        setUnlockToast(`UNLOCKED · ${parts.join(" · ")}`);
-        window.setTimeout(() => setUnlockToast(""), 5000);
-      }
-      setProgression(nextStats);
+      applyMissionEndProgression(state, false);
       if (document.pointerLockElement) document.exitPointerLock();
-      setHud((prev) => ({
-        ...prev,
-        health: 0,
-        missionTime: state.lastMissionTime || prev.missionTime,
-        rank: rankFromXp(nextStats.xp).rank,
-      }));
+      setMissionOutcome("failed");
       setGameOver(true);
       setStarted(false);
     }
@@ -2098,50 +2959,85 @@ export default function BradleysDarkSectorThreeJS() {
     }
   }
 
-  function animateSoldier(group: THREE.Group, dt: number, moving: boolean) {
+  function animateSoldier(group: THREE.Group, dt: number, moving: boolean, gaitRate = 1, kneelBlend = 0) {
     group.userData.actionLock = Math.max(0, (group.userData.actionLock || 0) - dt);
 
     if (group.userData.modelType === "mixamo-glb" || group.userData.modelType === "fbx-mixamo") return;
 
-    group.userData.walkTime = (group.userData.walkTime || 0) + dt * (moving ? 7.5 : 2.2);
+    const rate = THREE.MathUtils.clamp(gaitRate, 0.7, 1.65);
+    const k = THREE.MathUtils.clamp(kneelBlend, 0, 1);
+    const plantMoving = moving && k < 0.35;
+    group.userData.walkTime = (group.userData.walkTime || 0) + dt * (plantMoving ? 7.5 * rate : 2.2);
     const t = group.userData.walkTime;
     const limbs = group.userData.limbs;
     if (!limbs) return;
 
     const walk = Math.sin(t);
     const walkOpp = Math.sin(t + Math.PI);
-    const bob = moving ? Math.abs(Math.sin(t)) * 0.09 : Math.sin(t * 0.65) * 0.012;
+    const bob = plantMoving ? Math.abs(Math.sin(t)) * 0.09 : Math.sin(t * 0.65) * 0.012;
     const shootKick = Math.max(0, group.userData.shootRecoil || 0);
     group.userData.shootRecoil = Math.max(0, shootKick - dt * 1.9);
-    const sway = moving ? Math.sin(t * 0.5) * 0.035 : Math.sin(t * 0.35) * 0.01;
+    const sway = plantMoving ? Math.sin(t * 0.5) * 0.035 : Math.sin(t * 0.35) * 0.01;
 
-    limbs.lLeg.rotation.x = walk * (moving ? 0.82 : 0.04);
-    limbs.rLeg.rotation.x = walkOpp * (moving ? 0.82 : 0.04);
-    limbs.lLeg.rotation.z = Math.cos(t) * (moving ? 0.08 : 0.01);
-    limbs.rLeg.rotation.z = -Math.cos(t) * (moving ? 0.08 : 0.01);
+    // Standing locomotion
+    const standLLegX = walk * (plantMoving ? 0.82 : 0.04);
+    const standRLegX = walkOpp * (plantMoving ? 0.82 : 0.04);
+    const standLLegZ = Math.cos(t) * (plantMoving ? 0.08 : 0.01);
+    const standRLegZ = -Math.cos(t) * (plantMoving ? 0.08 : 0.01);
+    const standLArmX = walkOpp * (plantMoving ? 0.45 : 0.035) - 0.14;
+    const standRArmX = walk * (plantMoving ? 0.38 : 0.035) - 0.12;
+    const standLArmZ = -0.25 + Math.cos(t) * (plantMoving ? 0.08 : 0.02);
+    const standRArmZ = 0.25 - Math.cos(t) * (plantMoving ? 0.06 : 0.02);
+    const standTorsoY = 1.55 + bob;
+    const standHipsY = 0.95 + bob * 0.75;
+    const standTorsoX = plantMoving ? -0.12 : Math.sin(t * 0.5) * 0.015;
+    const standHeadY = 2.23 + bob * 0.45;
+    const standRifleY = 1.52 + bob * 0.8;
+    const standRifleZ = -0.47;
 
-    limbs.lArm.rotation.x = walkOpp * (moving ? 0.45 : 0.035) - 0.14;
-    limbs.rArm.rotation.x = walk * (moving ? 0.38 : 0.035) - 0.12;
-    limbs.lArm.rotation.z = -0.25 + Math.cos(t) * (moving ? 0.08 : 0.02);
-    limbs.rArm.rotation.z = 0.25 - Math.cos(t) * (moving ? 0.06 : 0.02);
+    // Asymmetric kneel-fire: front foot planted, rear knee down, torso upright to aim.
+    const kneelLLegX = 0.95;
+    const kneelRLegX = 1.55;
+    const kneelLLegZ = -0.08;
+    const kneelRLegZ = 0.12;
+    const kneelLArmX = -0.55;
+    const kneelRArmX = -0.72;
+    const kneelLArmZ = -0.32;
+    const kneelRArmZ = 0.28;
+    const kneelTorsoY = 1.12;
+    const kneelHipsY = 0.52;
+    const kneelTorsoX = 0.06;
+    const kneelHeadY = 1.78;
+    const kneelRifleY = 1.18;
+    const kneelRifleZ = -0.42;
 
-    limbs.torso.position.y = 1.55 + bob;
-    limbs.hips.position.y = 0.95 + bob * 0.75;
-    limbs.torso.rotation.x = moving ? -0.12 : Math.sin(t * 0.5) * 0.015;
-    limbs.torso.rotation.z = sway;
-    limbs.head.position.y = 2.23 + bob * 0.45;
-    limbs.head.rotation.y = Math.sin(t * 0.45) * (moving ? 0.03 : 0.012);
-    limbs.head.rotation.x = moving ? 0.035 : 0;
+    limbs.lLeg.rotation.x = THREE.MathUtils.lerp(standLLegX, kneelLLegX, k);
+    limbs.rLeg.rotation.x = THREE.MathUtils.lerp(standRLegX, kneelRLegX, k);
+    limbs.lLeg.rotation.z = THREE.MathUtils.lerp(standLLegZ, kneelLLegZ, k);
+    limbs.rLeg.rotation.z = THREE.MathUtils.lerp(standRLegZ, kneelRLegZ, k);
 
-    limbs.rifle.position.y = 1.52 + bob * 0.8;
-    limbs.rifle.rotation.z = Math.sin(t) * (moving ? 0.025 : 0.008);
-    limbs.rifle.rotation.x = -0.02 + Math.cos(t * 0.8) * (moving ? 0.018 : 0.006) - shootKick * 0.55;
-    limbs.rifle.position.z = -0.47 + shootKick * 0.22;
+    limbs.lArm.rotation.x = THREE.MathUtils.lerp(standLArmX, kneelLArmX, k);
+    limbs.rArm.rotation.x = THREE.MathUtils.lerp(standRArmX, kneelRArmX, k);
+    limbs.lArm.rotation.z = THREE.MathUtils.lerp(standLArmZ, kneelLArmZ, k);
+    limbs.rArm.rotation.z = THREE.MathUtils.lerp(standRArmZ, kneelRArmZ, k);
+
+    limbs.torso.position.y = THREE.MathUtils.lerp(standTorsoY, kneelTorsoY, k);
+    limbs.hips.position.y = THREE.MathUtils.lerp(standHipsY, kneelHipsY, k);
+    limbs.torso.rotation.x = THREE.MathUtils.lerp(standTorsoX, kneelTorsoX, k);
+    limbs.torso.rotation.z = sway * (1 - k * 0.85);
+    limbs.head.position.y = THREE.MathUtils.lerp(standHeadY, kneelHeadY, k);
+    limbs.head.rotation.y = Math.sin(t * 0.45) * (plantMoving ? 0.03 : 0.012) * (1 - k);
+    limbs.head.rotation.x = plantMoving ? 0.035 * (1 - k) : 0;
+
+    limbs.rifle.position.y = THREE.MathUtils.lerp(standRifleY, kneelRifleY, k);
+    limbs.rifle.rotation.z = Math.sin(t) * (plantMoving ? 0.025 : 0.008) * (1 - k);
+    limbs.rifle.rotation.x = -0.02 + Math.cos(t * 0.8) * (plantMoving ? 0.018 : 0.006) * (1 - k) - shootKick * 0.55;
+    limbs.rifle.position.z = THREE.MathUtils.lerp(standRifleZ, kneelRifleZ, k) + shootKick * 0.22;
     limbs.rArm.rotation.x -= shootKick * 0.9;
     limbs.lArm.rotation.x -= shootKick * 0.55;
     limbs.torso.rotation.x -= shootKick * 0.18;
 
-    group.position.y = group.userData.baseY + bob * 0.2;
+    group.position.y = group.userData.baseY + bob * 0.2 * (1 - k) - k * 0.28;
   }
 
   function triggerSoldierShootAnimation(state: GameState, soldier: THREE.Group) {
@@ -2166,7 +3062,7 @@ export default function BradleysDarkSectorThreeJS() {
     if (state.fireCooldown > 0 || state.reload > 0 || !state.running) return;
     if (state.gameMode === "pvp" && !state.pvpAlive) return;
     const weapon = WEAPONS[state.activeWeapon];
-    const loadoutAttachments = progression.loadout.find((l) => l.weapon === state.activeWeapon)?.attachments || [];
+    const loadoutAttachments = progressionRef.current.loadout.find((l) => l.weapon === state.activeWeapon)?.attachments || [];
     const mods = applyAttachmentMods(weapon, loadoutAttachments);
     const infiniteAmmo = state.gameMode === "range";
     if (state.ammo <= 0) {
@@ -2179,17 +3075,22 @@ export default function BradleysDarkSectorThreeJS() {
       state.weaponAmmo[state.activeWeapon] = state.ammo;
     }
     state.fireCooldown = mods.fireInterval;
-    state.recoil = Math.min(0.24, state.recoil + mods.recoil);
+    const kick = weaponRecoilKick(state.activeWeapon, mods.recoil, state.adsBlend);
+    state.recoil = Math.min(0.28, state.recoil + kick.pitch);
+    state.recoilYaw = THREE.MathUtils.clamp(state.recoilYaw + kick.yaw, -0.06, 0.06);
     if (!state.xr?.presenting) {
-      addRecoilShake(state.combatFx, mods.recoil * 2.2);
+      addRecoilShake(state.combatFx, kick.shake);
+      state.combatFx.cameraPunch.x += kick.yaw * 1.4;
       state.viewmodelPoses[state.activeWeapon].recoilKick = Math.min(
         0.35,
-        state.viewmodelPoses[state.activeWeapon].recoilKick + mods.recoil * 2
+        state.viewmodelPoses[state.activeWeapon].recoilKick + kick.pitch * 2.4
       );
     }
     state.audio.playWeaponFire(state.activeWeapon);
     if (!infiniteAmmo && state.ammo <= 0) beginReload(state);
-    state.camera.updateMatrixWorld(true);
+    if (!isXrPresenting(state.renderer, state.xr)) {
+      state.camera.updateMatrixWorld(true);
+    }
 
     const origin = new THREE.Vector3();
     const dir = new THREE.Vector3();
@@ -2208,8 +3109,13 @@ export default function BradleysDarkSectorThreeJS() {
     }
     const adsSpreadMultiplier = THREE.MathUtils.lerp(1, 0.48, state.adsBlend);
     const accuracyMultiplier = Math.max(0.65, 1 - mods.accuracyBonus);
+    const keys = keysRef.current;
+    const moving =
+      Boolean(keys.w || keys.a || keys.s || keys.d || keys.ArrowUp || keys.ArrowDown || keys.ArrowLeft || keys.ArrowRight);
+    const sprinting = moving && Boolean(keys.shift);
+    const moveSpread = sprinting ? 0.0042 : moving ? 0.002 : 0;
     const spread =
-      (weapon.baseSpread + weapon.sustainedSpread * state.fireHeat) *
+      (weapon.baseSpread + weapon.sustainedSpread * state.fireHeat + moveSpread) *
       adsSpreadMultiplier *
       accuracyMultiplier;
     dir
@@ -2217,15 +3123,24 @@ export default function BradleysDarkSectorThreeJS() {
       .addScaledVector(up, (Math.random() - 0.5) * 2 * spread)
       .normalize();
     state.fireHeat = weapon.automatic ? Math.min(1, state.fireHeat + 0.16) : 0;
-    spawnShellCasing(state.combatFx, origin.clone().add(right.clone().multiplyScalar(0.25)).add(new THREE.Vector3(0, -0.15, 0)), right);
-    state.audio.playShellCasing();
+    const fxQuality = effectiveFxQuality(state);
+    if (!isXrPresenting(state.renderer, state.xr)) {
+      spawnShellCasing(
+        state.combatFx,
+        origin.clone().add(right.clone().multiplyScalar(0.25)).add(new THREE.Vector3(0, -0.15, 0)),
+        right,
+        fxQuality,
+      );
+      state.audio.playShellCasing();
+    }
 
     if (state.gameMode === "range" && state.shootingRange) {
       const rangeHit = state.shootingRange.tryHit(origin, dir);
       if (rangeHit) {
-        spawnBulletImpact(state.combatFx, rangeHit.point, dir.clone().multiplyScalar(-1), "metal");
+        spawnBulletImpact(state.combatFx, rangeHit.point, dir.clone().multiplyScalar(-1), "metal", fxQuality);
         state.audio.playImpact("metal");
-        flashHitMarker();
+        flashHitMarker("hit");
+        state.audio.playHitConfirm();
         state.score = state.shootingRange.stats.score;
         state.killStreak += 1;
         state.bestStreak = Math.max(state.bestStreak, state.killStreak);
@@ -2233,20 +3148,23 @@ export default function BradleysDarkSectorThreeJS() {
         state.shootingRange.registerMiss();
         const impactPoint = origin.clone().add(dir.clone().multiplyScalar(28));
         impactPoint.y = Math.max(0.05, impactPoint.y - 0.2);
-        spawnBulletImpact(state.combatFx, impactPoint, new THREE.Vector3(0, 1, 0), Math.random() < 0.5 ? "metal" : "dirt");
+        spawnBulletImpact(state.combatFx, impactPoint, new THREE.Vector3(0, 1, 0), Math.random() < 0.5 ? "metal" : "dirt", fxQuality);
         state.audio.playImpact(Math.random() < 0.5 ? "metal" : "dirt");
         if (Math.random() < 0.2) state.audio.playRicochet();
         state.killStreak = 0;
       }
-      const bullet = new THREE.Mesh(new THREE.SphereGeometry(0.045, 8, 8), new THREE.MeshBasicMaterial({ color: rangeHit ? 0xff5533 : 0xfff3a3 }));
-      bullet.position.copy(origin).add(dir.clone().multiplyScalar(1.4));
-      bullet.userData = { velocity: dir.clone().multiplyScalar(55), life: 0.35 };
+      const muzzle = origin.clone().add(dir.clone().multiplyScalar(0.35));
+      spawnMuzzleBlast(state.combatFx, muzzle, dir, fxQuality, { color: 0xffc878 });
+      const bullet = spawnTracer({
+        origin: origin.clone().add(dir.clone().multiplyScalar(1.4)),
+        direction: dir,
+        speed: 55,
+        life: 0.35,
+        color: rangeHit ? 0xff6a3a : 0xffe6a8,
+        quality: fxQuality,
+      });
       state.scene.add(bullet);
       state.bullets.push(bullet);
-      const flash = new THREE.PointLight(0xffcc66, 5, 6);
-      flash.position.copy(origin).add(dir.clone().multiplyScalar(0.35));
-      state.scene.add(flash);
-      window.setTimeout(() => state.scene.remove(flash), 65);
       return;
     }
 
@@ -2286,36 +3204,47 @@ export default function BradleysDarkSectorThreeJS() {
 
     if (closestHit) {
       const enemy = closestHit.enemy;
-      spawnBulletImpact(state.combatFx, closestHit.point, dir.clone().multiplyScalar(-1), "flesh");
-      state.audio.playImpact("flesh");
+      const isArmored =
+        enemy.userData.enemyType === "Heavy" || enemy.userData.enemyType === "Commander";
+      spawnBulletImpact(state.combatFx, closestHit.point, dir.clone().multiplyScalar(-1), "flesh", fxQuality);
       applyHitReact(enemy, 0.22);
       if (closestHit.remoteId) {
         pvpClientRef.current?.sendHit(closestHit.remoteId, mods.damage);
         enemy.userData.hitReact = 0.18;
-        flashHitMarker();
+        flashHitMarker("hit");
+        state.audio.playGoreImpact("hit");
+        state.audio.playHitConfirm();
+        applyEnemyBloodFlash(enemy, "hit");
       } else {
-        enemy.userData.health -= mods.damage;
+        const damage = damageAtRange(mods.damage, closestHit.distance, isArmored);
+        const willKill = enemy.userData.health - damage <= 0;
+        enemy.userData.health -= damage;
         enemy.userData.hitReact = 0.18;
-        flashHitMarker();
+        state.audio.playGoreImpact(willKill ? "kill" : "hit");
+        applyEnemyBloodFlash(enemy, willKill ? "kill" : "hit");
+        if (willKill) {
+          flashHitMarker("kill");
+          state.audio.playKillConfirm();
+        } else if (isArmored) {
+          flashHitMarker("armor");
+          state.audio.playArmorHit();
+        } else {
+          flashHitMarker("hit");
+          state.audio.playHitConfirm();
+        }
         // Trigger hit / death animation when clips exist
         if (enemy.userData.mixer && enemy.userData.health > 0) {
           const clips = [...Object.values(state.fbxClips), ...state.enemyAnimations];
           playOrSwitch(enemy.userData.mixer as THREE.AnimationMixer, enemy, clips, "hit", { force: true, loop: false });
         }
-        enemy.traverse((child: THREE.Object3D) => {
-          if (child instanceof THREE.Mesh && child.material instanceof THREE.MeshStandardMaterial) {
-            const mat = child.material;
-            const baseHex = typeof mat.userData.baseEmissiveHex === "number" ? mat.userData.baseEmissiveHex : 0x000000;
-            const baseIntensity = typeof mat.userData.baseEmissiveIntensity === "number" ? mat.userData.baseEmissiveIntensity : 0;
-            mat.emissive.setHex(0x6b160f);
-            mat.emissiveIntensity = Math.max(0.32, baseIntensity);
-            window.setTimeout(() => {
-              mat.emissive.setHex(baseHex);
-              mat.emissiveIntensity = baseIntensity;
-            }, 90);
-          }
-        });
         if (enemy.userData.health <= 0) {
+          spawnFleshDeathGore(state.combatFx, closestHit.point, dir, fxQuality);
+          spawnGroundBloodPool(
+            state.combatFx,
+            enemy.position.clone().setY(0.02),
+            1.1,
+            fxQuality,
+          );
           enemy.userData.alive = false;
           enemy.userData.dying = true;
           enemy.userData.deathT = 0;
@@ -2334,7 +3263,7 @@ export default function BradleysDarkSectorThreeJS() {
           // Fake grenade threat reaction for nearby AI when a heavy dies
           if (enemy.userData.enemyType === "Heavy" || enemy.userData.enemyType === "Commander") {
             signalGrenadeThreat(state.enemies, enemy.position.x, enemy.position.z, 12);
-            spawnDestructionBurst(state.scene, enemy.position.x, enemy.position.z);
+            spawnDestructionBurst(state.scene, enemy.position.x, enemy.position.z, state.atmosphere);
             state.audio.playExplosion(8);
           }
         }
@@ -2344,33 +3273,39 @@ export default function BradleysDarkSectorThreeJS() {
       const world = coverHit ?? raycastWorldCover(state, origin, dir, 55);
       if (world) {
         state.destruction.damageAt(world.point, mods.damage);
-        spawnBulletImpact(state.combatFx, world.point, world.normal, world.metal ? "metal" : "dirt");
+        spawnBulletImpact(state.combatFx, world.point, world.normal, world.metal ? "metal" : "dirt", fxQuality);
         state.audio.playImpact(world.metal ? "metal" : "dirt");
         if (world.metal || Math.random() < 0.3) state.audio.playRicochet();
       } else {
         const impactPoint = origin.clone().add(dir.clone().multiplyScalar(22));
         impactPoint.y = Math.max(0.05, impactPoint.y - 0.4);
-        spawnBulletImpact(state.combatFx, impactPoint, new THREE.Vector3(0, 1, 0), Math.random() < 0.35 ? "metal" : "dirt");
+        spawnBulletImpact(state.combatFx, impactPoint, new THREE.Vector3(0, 1, 0), Math.random() < 0.35 ? "metal" : "dirt", fxQuality);
         state.audio.playImpact(Math.random() < 0.35 ? "metal" : "dirt");
         if (Math.random() < 0.25) state.audio.playRicochet();
       }
     }
 
-    const bullet = new THREE.Mesh(new THREE.SphereGeometry(0.045, 8, 8), new THREE.MeshBasicMaterial({ color: closestHit ? 0xff5533 : 0xfff3a3 }));
-    bullet.position.copy(origin).add(dir.clone().multiplyScalar(1.4));
-    bullet.userData = { velocity: dir.clone().multiplyScalar(55), life: 0.35 };
+    const bullet = spawnTracer({
+      origin: origin.clone().add(dir.clone().multiplyScalar(1.4)),
+      direction: dir,
+      speed: 55,
+      life: 0.35,
+      color: closestHit ? 0xff6a3a : 0xffe6a8,
+      quality: fxQuality,
+    });
     state.scene.add(bullet);
     state.bullets.push(bullet);
 
-    const flash = new THREE.PointLight(0xffcc66, 5, 6);
-    flash.position.copy(origin).add(dir.clone().multiplyScalar(0.35));
-    state.scene.add(flash);
-    window.setTimeout(() => state.scene.remove(flash), 65);
+    const muzzle = origin.clone().add(dir.clone().multiplyScalar(0.35));
+    const muzzleQuality = fxQuality * THREE.MathUtils.lerp(1, 0.72, state.adsBlend);
+    spawnMuzzleBlast(state.combatFx, muzzle, dir, muzzleQuality, { color: 0xffc878 });
   }
 
   function throwPlayerGrenade(state: GameState, shotPose?: ShotPose | null) {
     if (!state.running || state.gameMode !== "solo" || state.grenadesRemaining <= 0) return false;
-    state.camera.updateMatrixWorld(true);
+    if (!isXrPresenting(state.renderer, state.xr)) {
+      state.camera.updateMatrixWorld(true);
+    }
     const origin = shotPose?.origin.clone() ?? state.camera.getWorldPosition(new THREE.Vector3());
     const direction = shotPose?.direction.clone()
       ?? new THREE.Vector3(0, 0, -1).applyQuaternion(state.camera.quaternion).normalize();
@@ -2392,13 +3327,14 @@ export default function BradleysDarkSectorThreeJS() {
       direction.multiplyScalar(9.5).add(new THREE.Vector3(0, 5.4, 0)),
       "enemy",
     ));
-    enemy.userData.nextGrenadeAt = performance.now() / 1000 + 12 + Math.random() * 8;
+    enemy.userData.nextGrenadeAt = performance.now() / 1000 + 80 + Math.random() * 40;
+    state.enemyGrenadeLockUntil = performance.now() / 1000 + ENEMY_GRENADE_GLOBAL_COOLDOWN + Math.random() * 18;
   }
 
   function explodeGrenade(state: GameState, grenade: GrenadeProjectile) {
     const point = grenade.mesh.position.clone();
     state.scene.remove(grenade.mesh);
-    spawnDestructionBurst(state.scene, point.x, point.z);
+    spawnDestructionBurst(state.scene, point.x, point.z, state.atmosphere);
     state.audio.playExplosion(point.distanceTo(state.player.position));
     state.destruction.damageAt(point, 120, grenade.radius);
 
@@ -2413,15 +3349,21 @@ export default function BradleysDarkSectorThreeJS() {
           enemy.userData.alive = false;
           enemy.userData.dying = true;
           enemy.userData.deathT = 0;
+          const gorePoint = enemy.position.clone().add(new THREE.Vector3(0, 0.9, 0));
+          spawnFleshDeathGore(state.combatFx, gorePoint, new THREE.Vector3(0, -0.4, 0), effectiveFxQuality(state));
+          spawnGroundBloodPool(state.combatFx, enemy.position.clone().setY(0.02), 1.2, effectiveFxQuality(state));
           state.dyingEnemies.push(enemy);
           state.score += enemy.userData.scoreValue || 100;
           state.sessionKills += 1;
+          state.audio.playGoreImpact("kill");
+          applyEnemyBloodFlash(enemy, "kill");
         }
       }
     } else {
       const distance = state.player.position.distanceTo(point);
       if (distance <= grenade.radius && hasLineOfSight(state, point, state.player.position)) {
-        damagePlayer(state, Math.round(52 * (1 - distance / grenade.radius)), point);
+        const raw = Math.round(40 * (1 - distance / grenade.radius));
+        damagePlayer(state, soloEnemyDamage(raw, state.gameMode), point);
       }
     }
   }
@@ -2433,20 +3375,44 @@ export default function BradleysDarkSectorThreeJS() {
     if (!mission || mission.type === "waves") return;
     for (const marker of mission.markers) {
       const g = new THREE.Group();
+      const isExtract = marker.kind === "extract" || mission.type === "extraction";
+      const color = isExtract ? 0xf59e0b : 0xfbbf24;
       const ring = new THREE.Mesh(
-        new THREE.RingGeometry(marker.radius * 0.85, marker.radius, 32),
-        new THREE.MeshBasicMaterial({ color: 0xfbbf24, transparent: true, opacity: 0.45, side: THREE.DoubleSide, depthWrite: false })
+        new THREE.RingGeometry(marker.radius * 0.82, marker.radius, 40),
+        new THREE.MeshBasicMaterial({
+          color,
+          transparent: true,
+          opacity: isExtract ? 0.55 : 0.45,
+          side: THREE.DoubleSide,
+          depthWrite: false,
+        })
       );
       ring.rotation.x = -Math.PI / 2;
       g.add(ring);
+      if (isExtract) {
+        const inner = new THREE.Mesh(
+          new THREE.RingGeometry(marker.radius * 0.35, marker.radius * 0.42, 32),
+          new THREE.MeshBasicMaterial({
+            color: 0xfde68a,
+            transparent: true,
+            opacity: 0.35,
+            side: THREE.DoubleSide,
+            depthWrite: false,
+          })
+        );
+        inner.rotation.x = -Math.PI / 2;
+        inner.position.y = 0.02;
+        g.add(inner);
+      }
       const beacon = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.08, 0.08, 2.4, 8),
-        new THREE.MeshBasicMaterial({ color: 0xfbbf24, transparent: true, opacity: 0.55 })
+        new THREE.CylinderGeometry(0.08, 0.08, isExtract ? 3.2 : 2.4, 8),
+        new THREE.MeshBasicMaterial({ color, transparent: true, opacity: isExtract ? 0.7 : 0.55 })
       );
-      beacon.position.y = 1.2;
+      beacon.position.y = isExtract ? 1.6 : 1.2;
       g.add(beacon);
       g.position.set(marker.x, 0.05, marker.z);
       g.userData.markerId = marker.id;
+      g.userData.extractRing = isExtract;
       state.scene.add(g);
       state.missionMarkers.push(g);
     }
@@ -2455,18 +3421,30 @@ export default function BradleysDarkSectorThreeJS() {
   function beginWaveContent(state: GameState) {
     state.coverPoints = buildCoverPointsFromColliders(state.colliders);
     const diff = DIFFICULTY[state.difficulty] || DIFFICULTY.operator;
-    const count = Math.max(4, Math.round((6 + state.wave * 2) * diff.enemyCountMul));
+    const count = waveEnemyTarget(state.wave, diff.enemyCountMul);
+    const typePool = [...ENEMY_TYPES];
+    for (let i = typePool.length - 1; i > 0; i -= 1) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [typePool[i], typePool[j]] = [typePool[j], typePool[i]];
+    }
     for (let i = 0; i < count; i += 1) {
       try {
-        spawnEnemy(state);
+        spawnEnemy(state, typePool[i % typePool.length]);
       } catch (err) {
         console.warn("[BDS] spawnEnemy failed", err);
       }
     }
     state.squads = assignSquads(state.enemies);
-    state.activeMission = pickMissionForWave(state.wave);
+    state.activeMission = pickMissionForWave(state.wave, state.activeSceneId);
+    state.extractAnnouncedPhase = -1;
+    state.extractReinforceAt = state.clock.getElapsed() + 8;
+    if (state.extractionHeli) resetExtractionHelicopter(state.extractionHeli);
     syncMissionMarkers(state);
-    if (state.activeMission.type !== "waves") {
+    if (state.activeMission.type === "extraction") {
+      state.audio.playRadio(extractInboundLine(), { channel: "mission" });
+      setMissionBanner("EXTRACT AUTHORIZED — Reach the amber LZ and hold for the bird");
+      window.setTimeout(() => setMissionBanner(""), 5200);
+    } else if (state.activeMission.type !== "waves") {
       state.audio.playRadio(missionBriefLine(state.activeMission.title, state.activeMission.briefing), {
         channel: "mission",
       });
@@ -2477,20 +3455,34 @@ export default function BradleysDarkSectorThreeJS() {
     const keys = keysRef.current;
     state.fireCooldown = Math.max(0, state.fireCooldown - dt);
     state.recoil = Math.max(0, state.recoil - dt * 0.5);
+    state.recoilYaw = THREE.MathUtils.damp(state.recoilYaw, 0, 14, dt);
     state.playerDamageCooldown = Math.max(0, state.playerDamageCooldown - dt);
     state.enemyVolleyCooldown = Math.max(0, state.enemyVolleyCooldown - dt);
+    const playerDelta = Math.hypot(
+      state.player.position.x - state.lastPlayerX,
+      state.player.position.z - state.lastPlayerZ,
+    );
+    if (playerDelta < 0.04) {
+      state.playerStationarySec += dt;
+    } else {
+      state.playerStationarySec = 0;
+    }
+    state.lastPlayerX = state.player.position.x;
+    state.lastPlayerZ = state.player.position.z;
     if (state.reload > 0) {
       state.reload -= dt;
       if (state.reload <= 0) {
         state.reload = 0;
         state.ammo = state.maxAmmo;
         state.weaponAmmo[state.activeWeapon] = state.ammo;
+        state.audio.playReloadComplete();
       }
     }
 
     const canControl = state.gameMode === "solo" || state.gameMode === "range" || state.pvpAlive;
     const xr = state.xr;
-    const inXr = Boolean(xr?.presenting);
+    // Prefer renderer flag too — never let desktop pose writes run during immersive frames.
+    const inXr = isXrPresenting(state.renderer, xr);
 
     if (canControl && inXr && xr) {
       const frame = xr.input.poll(state.settings.snapTurnDegrees);
@@ -2498,9 +3490,13 @@ export default function BradleysDarkSectorThreeJS() {
       xr.selectWasDown = frame.fire;
 
       if (frame.menu) {
-        if (xr.menu.isOpen()) xr.menu.hide();
-        else if (state.running) xr.menu.showPause();
-        else xr.menu.showMain();
+        if (xr.menu.isOpen()) {
+          xr.menu.hide();
+          if (state.running) xr.hud.setVisible(true);
+        } else if (state.running) {
+          xr.hud.setVisible(false);
+          xr.menu.showPause();
+        } else xr.menu.showMain();
       }
 
       if (frame.snapRadians !== 0) {
@@ -2511,12 +3507,20 @@ export default function BradleysDarkSectorThreeJS() {
       xr.menu.updatePose(state.player.position, state.yaw);
       if (xr.menu.isOpen()) {
         xr.menu.updateInteraction(xr.input.getUiRayTarget(), frame.fire, selectEdge);
-        xr.rig.root.position.set(state.player.position.x, state.player.position.y, state.player.position.z);
-        xr.hud.updatePose(state.player.position, state.yaw);
+        xr.reticle.setVisible(false);
+        xr.rig.setFloorPosition(state.player.position.x, state.player.position.y, state.player.position.z);
         updateComfortVignette(xr, false, state.settings.comfortVignette, dt);
         state.triggerLatched = frame.fire;
       } else if (state.running) {
-        attachWeaponsToGrip(xr, state.weaponViews, state.activeWeapon);
+        // Attach when missing OR when the resolved weapon grip changes (Quest often
+        // reports handedness late — first attach can land on the wrong controller).
+        const grip = xr.input.getWeaponGrip();
+        const needsAttach =
+          Boolean(grip) &&
+          (!xr.weaponsOnGrip || state.weaponViews[state.activeWeapon].parent !== grip);
+        if (needsAttach) attachWeaponsToGrip(xr, state.weaponViews, state.activeWeapon);
+        xr.hud.setVisible(true);
+        xr.input.setRaysVisible(false);
 
         state.crouching = frame.crouch;
         state.adsHeld = frame.ads;
@@ -2535,7 +3539,8 @@ export default function BradleysDarkSectorThreeJS() {
         const desired = move.multiplyScalar(speed * dt);
         const moved = tryMove(state, state.player.position, desired);
         state.player.position.copy(moved.position);
-        xr.rig.root.position.set(state.player.position.x, state.player.position.y, state.player.position.z);
+        // Floor origin only — never copy headset pose onto the rig (that head-locks the world).
+        xr.rig.setFloorPosition(state.player.position.x, state.player.position.y, state.player.position.z);
         updateComfortVignette(xr, moving, state.settings.comfortVignette && !state.settings.reduceMotion, dt);
 
         if (moving) {
@@ -2547,13 +3552,14 @@ export default function BradleysDarkSectorThreeJS() {
         }
 
         state.player.rotation.y = state.yaw + Math.PI;
-        // Headset owns camera pose — do not overwrite position/rotation/shake.
-        state.camera.updateMatrixWorld(true);
+        // Headset owns camera pose — do not write position/rotation/shake or force matrix updates.
 
         const triggerDown = frame.fire;
         state.fireHeat = Math.max(0, state.fireHeat - dt * (triggerDown ? 0.08 : 1.8));
         const weaponConfig = WEAPONS[state.activeWeapon];
         const pose = xr.input.getShotPose();
+        // Match the website crosshair visually, but keep it weapon-aimed in VR.
+        xr.reticle.update(pose, !aiming);
         if (weaponConfig.automatic) {
           if (triggerDown) shoot(state, pose);
         } else if (triggerDown && !state.triggerLatched) {
@@ -2565,14 +3571,12 @@ export default function BradleysDarkSectorThreeJS() {
         if (frame.interact) state.interactPulse = true;
         if (frame.swap) switchWeapon(state, nextWeapon(state.activeWeapon));
         if (frame.throwGrenade) throwPlayerGrenade(state, pose);
-        if (frame.medkit && state.medkits > 0 && state.health < 100) {
-          state.medkits -= 1;
-          state.health = Math.min(100, state.health + 45);
-        }
+        if (frame.medkit) consumeMedkit(state);
+        collectCompoundPickups(state, frame.interact);
         xr.hud.updatePose(state.player.position, state.yaw);
       } else {
-        xr.rig.root.position.set(state.player.position.x, state.player.position.y, state.player.position.z);
-        xr.hud.updatePose(state.player.position, state.yaw);
+        xr.reticle.setVisible(false);
+        xr.rig.setFloorPosition(state.player.position.x, state.player.position.y, state.player.position.z);
       }
     } else if (canControl) {
       if (keys.ArrowLeft) state.yaw += dt * 1.9;
@@ -2627,7 +3631,7 @@ export default function BradleysDarkSectorThreeJS() {
         state.camera,
         state.combatFx,
         state.pitch - state.recoil,
-        state.yaw,
+        state.yaw + state.recoilYaw,
         dt,
         state.settings.reduceMotion
       );
@@ -2669,11 +3673,11 @@ export default function BradleysDarkSectorThreeJS() {
       if (!keys.e) keys.__interactHeld = false;
       if (!keys.f) {
         keys.__medkitHeld = false;
-      } else if (!keys.__medkitHeld && state.medkits > 0 && state.health < 100) {
-        state.medkits -= 1;
-        state.health = Math.min(100, state.health + 45);
+      } else if (!keys.__medkitHeld) {
+        consumeMedkit(state);
         keys.__medkitHeld = true;
       }
+      collectCompoundPickups(state, Boolean(keys.e && keys.__interactHeld));
     } else {
       if (!inXr) {
         state.camera.position.copy(state.player.position).add(new THREE.Vector3(0, 1.95, 0));
@@ -2685,6 +3689,7 @@ export default function BradleysDarkSectorThreeJS() {
     if (inXr && xr) {
       xr.hud.update({
         health: state.health,
+        maxHealth: state.maxHealth,
         ammo: state.reload > 0 ? "…" : state.ammo,
         weapon: WEAPONS[state.activeWeapon].name,
         score: state.score,
@@ -2708,6 +3713,8 @@ export default function BradleysDarkSectorThreeJS() {
         rangeChallengeActive: Boolean(state.shootingRange?.stats.challengeActive),
         rangeChallengeTime: state.shootingRange?.stats.challengeTimeLeft ?? 0,
         subtitle: "",
+        medkits: state.medkits,
+        grenades: state.grenadesRemaining,
       });
     }
 
@@ -2764,9 +3771,9 @@ export default function BradleysDarkSectorThreeJS() {
       }
       if (state.shootingRange.nearRefill(state.player.position) || state.interactPulse) {
         const refill = state.shootingRange.refillWeapons();
-        const m4Max = applyAttachmentMods(WEAPONS.m4, progression.loadout.find((l) => l.weapon === "m4")?.attachments || []).maxAmmo;
-        const smgMax = applyAttachmentMods(WEAPONS.smg, progression.loadout.find((l) => l.weapon === "smg")?.attachments || []).maxAmmo;
-        const pistolMax = applyAttachmentMods(WEAPONS.pistol, progression.loadout.find((l) => l.weapon === "pistol")?.attachments || []).maxAmmo;
+        const m4Max = applyAttachmentMods(WEAPONS.m4, progressionRef.current.loadout.find((l) => l.weapon === "m4")?.attachments || []).maxAmmo;
+        const smgMax = applyAttachmentMods(WEAPONS.smg, progressionRef.current.loadout.find((l) => l.weapon === "smg")?.attachments || []).maxAmmo;
+        const pistolMax = applyAttachmentMods(WEAPONS.pistol, progressionRef.current.loadout.find((l) => l.weapon === "pistol")?.attachments || []).maxAmmo;
         state.weaponAmmo = {
           m4: Math.max(refill.m4, m4Max),
           smg: smgMax,
@@ -2795,13 +3802,16 @@ export default function BradleysDarkSectorThreeJS() {
     }
 
     if (state.gameMode === "solo") {
-      state.camera.updateMatrixWorld();
+      // During XR, WebXRManager owns camera matrices — do not force-update the user camera.
+      if (!isXrPresenting(state.renderer, state.xr)) {
+        state.camera.updateMatrixWorld();
+      }
       const aiCtx = {
         player: state.player.position.clone(),
         colliders: state.colliders,
         coverPoints: state.coverPoints,
         dt,
-        now: state.clock.elapsedTime,
+        now: state.clock.getElapsed(),
         tryMove: (from: THREE.Vector3, delta: THREE.Vector3) => tryMove(state, from, delta),
         hasLos: (from: THREE.Vector3, to: THREE.Vector3) => hasLineOfSight(state, from, to),
       };
@@ -2820,35 +3830,107 @@ export default function BradleysDarkSectorThreeJS() {
       const toPlayer = state.player.position.clone().sub(enemy.position);
       const distance = toPlayer.length();
       const range = enemy.userData.range || 5;
-      const steerResult = computeEnemySteer(enemy, aiCtx);
+      // Stagger heavy AI for distant hostiles — keep locomotion from cached steer.
+      enemy.userData._aiFrame = ((enemy.userData._aiFrame as number) || 0) + 1;
+      const aiStride = distance > 22 ? 3 : distance > 14 ? 2 : 1;
+      const skipHeavyAi = aiStride > 1 && (enemy.userData._aiFrame as number) % aiStride !== 0;
+      const cachedSteer = enemy.userData._cachedSteerResult as
+        | ReturnType<typeof computeEnemySteer>
+        | undefined;
+      const steerResult = skipHeavyAi && cachedSteer
+        ? cachedSteer
+        : computeEnemySteer(enemy, aiCtx);
+      if (!skipHeavyAi) enemy.userData._cachedSteerResult = steerResult;
       const speedMul = enemy.userData.aiSpeedMul || 1;
       const smoothedSteer = (enemy.userData.smoothedSteer as THREE.Vector3 | undefined) || new THREE.Vector3();
       enemy.userData.smoothedSteer = smoothedSteer;
-      const steeringResponse = steerResult.intent === "retreat" ? 9 : 5.5;
-      smoothedSteer.lerp(steerResult.steer, 1 - Math.exp(-dt * steeringResponse));
-      if (steerResult.steer.lengthSq() < 0.0001 && smoothedSteer.lengthSq() < 0.0025) smoothedSteer.set(0, 0, 0);
-      const preparingToFire =
-        !enemyShouldHoldFire(enemy)
+      const aiNowEarly = performance.now() / 1000;
+      const hasEngageLane =
+        !skipHeavyAi
+        && !enemyShouldHoldFire(enemy)
         && distance <= range
-        && enemy.userData.cooldown <= 0
+        && distance >= (enemy.userData.minimumDistance || 5) * 0.85
         && hasLineOfSight(state, enemy.position, state.player.position);
-      if (preparingToFire) smoothedSteer.multiplyScalar(Math.exp(-dt * 11));
-      // A firing soldier plants their feet; this makes bursts read as aimed
-      // actions rather than rounds sprayed during a direction change.
-      if ((enemy.userData.burstShotsRemaining || 0) > 0) smoothedSteer.multiplyScalar(Math.exp(-dt * 12));
+      // Brief plant-to-fire beats once settled on a fighting position — never
+      // interrupt long relocates (cover far away / advance / retreat).
+      const coverPoint = enemy.userData.coverTarget as { x: number; z: number } | null;
+      const coverDist = coverPoint
+        ? Math.hypot(coverPoint.x - enemy.position.x, coverPoint.z - enemy.position.z)
+        : Infinity;
+      const settledForVolley =
+        steerResult.intent === "hold"
+        || steerResult.intent === "strafe"
+        || (steerResult.intent === "cover" && coverDist <= 2.1);
+      const mayPlantToFire =
+        hasEngageLane
+        && enemy.userData.cooldown <= 0
+        && (enemy.userData.burstShotsRemaining || 0) <= 0
+        && aiNowEarly >= (enemy.userData.nextFireHoldAt || 0)
+        && settledForVolley
+        && !steerResult.retreating;
+      if (mayPlantToFire) {
+        enemy.userData.fireHoldUntil = aiNowEarly + 0.42 + Math.random() * 0.28;
+        enemy.userData.nextFireHoldAt = aiNowEarly + 2.8 + Math.random() * 1.4;
+      }
+      const fireHolding = aiNowEarly < (enemy.userData.fireHoldUntil || 0);
+      const relocatingCandidate =
+        !fireHolding
+        && (
+          steerResult.intent === "cover"
+          || steerResult.intent === "advance"
+          || steerResult.intent === "retreat"
+          || steerResult.intent === "strafe"
+        );
+      const kneelStance = updateEnemyKneelStance(enemy, {
+        now: aiNowEarly,
+        dt,
+        distance,
+        fireHolding,
+        relocating: relocatingCandidate,
+        intent: steerResult.intent,
+        wantCover: steerResult.wantCover,
+        fireHoldUntil: enemy.userData.fireHoldUntil || 0,
+      });
+      // Refresh after kneel may extend the plant window.
+      const fireHoldingNow = aiNowEarly < (enemy.userData.fireHoldUntil || 0);
+      const relocating = relocatingCandidate && !kneelStance.planted;
+      const planted = fireHoldingNow || kneelStance.planted;
+      const steeringResponse =
+        planted
+          ? 16
+          : steerResult.intent === "retreat" || steerResult.intent === "advance"
+            ? 11
+            : steerResult.intent === "cover"
+              ? 9
+              : 7;
+      const desiredSteer = planted ? new THREE.Vector3() : steerResult.steer;
+      smoothedSteer.lerp(desiredSteer, 1 - Math.exp(-dt * steeringResponse));
+      if (desiredSteer.lengthSq() < 0.0001 && smoothedSteer.lengthSq() < 0.0025) smoothedSteer.set(0, 0, 0);
+      // Plant firmly while firing / kneeling; do not crawl-damp while relocating through a burst.
+      const bursting = (enemy.userData.burstShotsRemaining || 0) > 0;
+      if (planted) {
+        // Hard plant — no residual slide / moonwalk in kneel or fire-hold.
+        smoothedSteer.set(0, 0, 0);
+      } else if (bursting && !relocating) {
+        smoothedSteer.multiplyScalar(Math.exp(-dt * 16));
+      }
 
+      const steerMag = Math.min(1, smoothedSteer.length());
       const step = smoothedSteer.clone().multiplyScalar(enemy.userData.speed * speedMul * dt);
       const before = enemy.position.clone();
-      const result = tryMove(state, enemy.position, step);
+      const result = planted
+        ? { position: before.clone(), moved: false, stuck: false }
+        : tryMove(state, enemy.position, step);
       enemy.position.copy(result.position);
       const groundY = enemy.userData.groundOffset ?? enemy.userData.baseY ?? 0;
-      enemy.position.y = groundY;
+      const kneelDrop = (kneelStance.kneelBlend || 0) * 0.28;
+      enemy.position.y = groundY - kneelDrop;
       enemy.userData.baseY = groundY;
-      if (result.stuck) {
+      if (result.stuck && !planted) {
         enemy.userData.stuckTime = (enemy.userData.stuckTime || 0) + dt;
-        if (state.clock.elapsedTime >= (enemy.userData.nextFlankFlipAt || 0)) {
+        if (state.clock.getElapsed() >= (enemy.userData.nextFlankFlipAt || 0)) {
           enemy.userData.flank *= -1;
-          enemy.userData.nextFlankFlipAt = state.clock.elapsedTime + 0.8;
+          enemy.userData.nextFlankFlipAt = state.clock.getElapsed() + 0.8;
         }
         if (enemy.userData.stuckTime > 1.25) {
           const toward = distance > 0.001 ? toPlayer.clone().normalize() : new THREE.Vector3(0, 0, -1);
@@ -2858,10 +3940,10 @@ export default function BradleysDarkSectorThreeJS() {
             .multiplyScalar(0.35)
             .addScaledVector(flankDir, 0.75)
             .normalize()
-            .multiplyScalar(enemy.userData.speed * dt);
+            .multiplyScalar(enemy.userData.speed * speedMul * dt);
           const bump = tryMove(state, enemy.position, escape);
           enemy.position.copy(bump.position);
-          enemy.position.y = groundY;
+          enemy.position.y = groundY - kneelDrop;
           enemy.userData.stuckTime = bump.moved ? 0.8 : 1.1;
         }
       } else if (before.distanceToSquared(enemy.position) > 0.00001) {
@@ -2871,28 +3953,39 @@ export default function BradleysDarkSectorThreeJS() {
       const turnError = turnEnemyTowardPlayer(enemy, state.player.position, dt);
       const movedDistance = before.distanceTo(enemy.position);
       const motionSpeed = movedDistance / Math.max(dt, 0.001);
+      const intendedSpeed = enemy.userData.speed * speedMul * steerMag;
+      // Prefer intended pace when a collider nibble keeps displacement tiny for a frame.
+      const animSpeed = resolveEnemyAnimSpeed(motionSpeed, intendedSpeed, relocating && !planted && steerMag > 0.2);
       enemy.userData.motionSpeed = motionSpeed;
-      const enemyMoving = movedDistance > 0.002;
-      const enemyFast = enemy.userData.speed > 2.7 || speedMul > 1.2;
+      enemy.userData.intendedSpeed = intendedSpeed;
+      // Prefer locomotion clips whenever steer/step says we should be moving,
+      // even if a collider nibble keeps world displacement tiny for a frame.
+      const wantsLocomotion = relocating && !planted && smoothedSteer.lengthSq() > 0.04;
+      const enemyMoving = !planted && (movedDistance > 0.0015 || wantsLocomotion);
       if (enemy.userData.modelType === "fbx-mixamo" || enemy.userData.modelType === "mixamo-glb") {
-        if (steerResult.wantCover && !enemyMoving) {
+        if (kneelStance.kneelBlend > 0.45 && !enemyMoving) {
+          switchEnemyAnimation(state, enemy, ["kneel", "kneeling", "crouch", "idle_gun_pointing", "aim", "idle"]);
+        } else if ((fireHoldingNow || (steerResult.wantCover && steerResult.intent === "hold")) && !enemyMoving) {
           switchEnemyAnimation(state, enemy, ["idle_gun_pointing", "idle_gun", "aim", "idle"]);
         } else {
+          // Quaternius Walk/Run are unarmed — using them while the rifle is
+          // parented to WristR makes the gun look slung on the back. Always
+          // prefer Run_Shoot (gun-ready locomotion) and scale its playback.
           switchEnemyAnimation(
             state,
             enemy,
             enemyMoving
-              ? enemyFast
-                ? ["run_shoot", "run", "walk"]
-                : ["walk", "run_shoot", "run"]
+              ? ["run_shoot", "idle_gun_shoot", "idle_gun_pointing", "idle_gun"]
               : ["idle_gun_pointing", "idle_gun", "aim", "idle"]
           );
         }
+        syncEnemyLocomotionTimeScale(enemy, enemyMoving ? animSpeed : 0);
       }
-      animateSoldier(enemy, dt, enemyMoving);
+      const gaitRate = enemyMoving ? THREE.MathUtils.clamp(animSpeed / 3.2, 0.75, 1.55) : 1;
+      animateSoldier(enemy, dt, enemyMoving, gaitRate, kneelStance.kneelBlend);
       enemy.userData.cooldown -= dt;
       enemy.userData.burstShotTimer = Math.max(0, (enemy.userData.burstShotTimer || 0) - dt);
-      const aiNow = performance.now() / 1000;
+      const aiNow = aiNowEarly;
       if ((enemy.userData.reloadUntil || 0) > 0 && aiNow >= enemy.userData.reloadUntil) {
         enemy.userData.magazine = enemy.userData.magazineSize || 24;
         enemy.userData.reloadUntil = 0;
@@ -2902,17 +3995,22 @@ export default function BradleysDarkSectorThreeJS() {
         enemy.userData.burstShotsRemaining = 0;
       }
       if (
-        distance > 7
-        && distance < 17
-        && aiNow >= (enemy.userData.nextGrenadeAt || Number.POSITIVE_INFINITY)
-        && hasLineOfSight(state, enemy.position, state.player.position)
+        shouldEnemyThrowGrenade(
+          state,
+          enemy,
+          distance,
+          steerResult,
+          aiNow,
+        )
       ) {
         throwEnemyGrenade(state, enemy);
       }
 
       const mayDamage = canEnemyDealDamage(state, enemy, distance);
       const holding = enemyShouldHoldFire(enemy);
-      const aimSettled = turnError < 0.14 && motionSpeed < 0.85;
+      const aimSettled =
+        turnError < 0.16
+        && (planted || fireHoldingNow || motionSpeed < 0.95 || steerResult.intent === "hold");
       const hasFiringLane = !holding
         && distance <= range
         && hasLineOfSight(state, enemy.position, state.player.position);
@@ -2927,14 +4025,22 @@ export default function BradleysDarkSectorThreeJS() {
         enemy.userData.burstShotsRemaining =
           typeName === "Sniper" ? 1 : typeName === "Heavy" ? 4 : typeName === "Scout" ? 2 : 3;
         enemy.userData.burstShotTimer = 0;
+        enemy.userData.fireHoldUntil = Math.max(
+          enemy.userData.fireHoldUntil || 0,
+          aiNow + 0.32 + (enemy.userData.burstShotsRemaining || 1) * 0.12
+        );
       }
 
       const canShootBurstRound =
         hasFiringLane
         && turnError < 0.18
+        && (planted || motionSpeed < 1.15)
         && (enemy.userData.burstShotsRemaining || 0) > 0
         && enemy.userData.burstShotTimer <= 0;
       if (canShootBurstRound) {
+        // Fire-time aim telemetry — async QA probes read these instead of racing the frame loop.
+        enemy.userData.lastShotTurnError = turnError;
+        enemy.userData.lastShotMotionSpeed = planted ? 0 : motionSpeed;
         triggerSoldierShootAnimation(state, enemy);
         pulseEnemyMuzzleFlash(enemy);
         enemy.userData.burstShotsRemaining -= 1;
@@ -2946,14 +4052,11 @@ export default function BradleysDarkSectorThreeJS() {
         }
 
         const damageEligibleThisRound = mayDamage && state.enemyVolleyCooldown <= 0;
-        if (damageEligibleThisRound) state.enemyVolleyCooldown = 0.35;
-        const accuracy = Math.min(0.58, 0.12 + (1 - distance / Math.max(range, 1)) * 0.4);
+        if (damageEligibleThisRound) state.enemyVolleyCooldown = 0.68;
+        const accuracy = Math.min(0.5, 0.1 + (1 - distance / Math.max(range, 1)) * 0.34);
         const hit = Math.random() < accuracy;
+        const fxQuality = effectiveFxQuality(state);
 
-        const tracer = new THREE.Mesh(
-          new THREE.SphereGeometry(0.045, 6, 6),
-          new THREE.MeshBasicMaterial({ color: hit && damageEligibleThisRound ? 0xff8844 : 0xe7d59a })
-        );
         const from = getEnemyMuzzleWorldPos(enemy);
         const to = state.player.position.clone().add(new THREE.Vector3(0, 1.6, 0));
         const shotDir = to.sub(from.clone()).normalize();
@@ -2967,14 +4070,22 @@ export default function BradleysDarkSectorThreeJS() {
             if (Math.random() < 0.35) state.audio.playSuppression();
           }
         }
-        tracer.position.copy(from.add(shotDir.clone().multiplyScalar(0.35)));
-        tracer.userData = {
-          velocity: shotDir.multiplyScalar(48),
+        spawnMuzzleBlast(state.combatFx, from, shotDir, fxQuality, {
+          color: 0xffb86a,
+          smoke: fxQuality >= 0.7,
+          light: false, // pulseEnemyMuzzleFlash already owns the attached light
+        });
+        const tracer = spawnTracer({
+          origin: from.clone().add(shotDir.clone().multiplyScalar(0.35)),
+          direction: shotDir,
+          speed: 48,
           life: 0.45,
+          color: hit && damageEligibleThisRound ? 0xff8a4a : 0xe8d29a,
+          quality: fxQuality,
           enemyProjectile: true,
           enemyDamage: hit && damageEligibleThisRound ? enemy.userData.damage || 7 : 0,
           sourcePosition: enemy.position.clone(),
-        };
+        });
         state.scene.add(tracer);
         state.bullets.push(tracer);
       }
@@ -3005,26 +4116,37 @@ export default function BradleysDarkSectorThreeJS() {
             result.worldHit.point,
             result.worldHit.normal,
             result.worldHit.surface === "dirt" ? "dirt" : "metal",
+            effectiveFxQuality(state),
           );
           state.audio.playImpact(result.worldHit.surface === "dirt" ? "dirt" : "metal");
           bullet.userData.life = 0;
         } else if (result.targetHit && bullet.userData.enemyDamage > 0) {
-          damagePlayer(state, bullet.userData.enemyDamage, bullet.userData.sourcePosition || bullet.position);
+          damagePlayer(
+            state,
+            soloEnemyDamage(bullet.userData.enemyDamage, state.gameMode),
+            bullet.userData.sourcePosition || bullet.position,
+          );
           bullet.userData.life = 0;
         } else if (result.targetHit) {
           addSuppression(state.combatFx, 0.12);
           bullet.userData.life = 0;
         } else if (bullet.position.distanceTo(playerCenter) < 1.7) {
-          addSuppression(state.combatFx, 0.08);
+          addSuppression(state.combatFx, 0.1);
+          if (!bullet.userData.nearMissPlayed && (bullet.userData.enemyDamage || 0) <= 0) {
+            bullet.userData.nearMissPlayed = true;
+            if (Math.random() < 0.5) state.audio.playNearMiss();
+          }
         }
       } else {
         bullet.position.addScaledVector(velocity, dt);
       }
       bullet.userData.life -= dt;
+      if (bullet.userData.pooledTracer) orientTracer(bullet);
     });
     state.bullets = state.bullets.filter((bullet) => {
       if (bullet.userData.life > 0) return true;
-      state.scene.remove(bullet);
+      if (bullet.userData.pooledTracer) releaseTracer(bullet);
+      else state.scene.remove(bullet);
       return false;
     });
 
@@ -3035,14 +4157,31 @@ export default function BradleysDarkSectorThreeJS() {
     });
 
     updateCombatFx(state.combatFx, dt);
-    updateDestruction(state.scene, dt);
+    updateDestruction(state.atmosphere, dt);
     state.quality.update(dt);
+
+    // Hard cap live tracers — Quest Browser GC / compositor spikes hard past ~20.
+    const maxBullets = state.xr?.presenting || isTouchDevice() ? 16 : 48;
+    while (state.bullets.length > maxBullets) {
+      const oldest = state.bullets.shift();
+      if (!oldest) break;
+      if (oldest.userData.pooledTracer) releaseTracer(oldest);
+      else state.scene.remove(oldest);
+    }
 
     if (state.gameMode === "solo") {
       state.enemies = state.enemies.filter((enemy) => enemy.userData.alive);
 
+      if (state.activeSceneId === "compound") {
+        if (state.interactPulse && tryAlliedNpcTalk(state.alliedNpcState, buildAlliedNpcContext(state, true))) {
+          state.interactPulse = false;
+        }
+        updateAlliedNpcs(state.alliedNpcState, buildAlliedNpcContext(state));
+      }
+
       if (state.activeMission) {
         const prevComplete = state.activeMission.complete;
+        const prevPhase = state.activeMission.phase;
         state.activeMission = updateMission(state.activeMission, {
           playerX: state.player.position.x,
           playerZ: state.player.position.z,
@@ -3050,7 +4189,10 @@ export default function BradleysDarkSectorThreeJS() {
           killsThisFrame: 0,
           dt,
           interactPressed: state.interactPulse,
-          roomId: warehouseRoomAt(state.player.position.x, state.player.position.z),
+          roomId:
+            state.activeSceneId === "compound"
+              ? warehouseRoomAt(state.player.position.x, state.player.position.z)
+              : null,
         });
         state.interactPulse = false;
         if (state.activeMission.type === "rescue") {
@@ -3058,7 +4200,48 @@ export default function BradleysDarkSectorThreeJS() {
           const marker = state.missionMarkers.find((g) => g.userData.markerId === "asset");
           if (asset && marker) marker.position.set(asset.x, 0.05, asset.z);
         }
+
+        if (state.activeMission.type === "extraction" && state.extractionHeli && state.activeSceneId === "compound") {
+          const m = state.activeMission;
+          if (m.phase >= 1 && state.extractionHeli.phase === "hidden") {
+            startHeliInbound(state.extractionHeli);
+          }
+          if (m.phase !== state.extractAnnouncedPhase) {
+            state.extractAnnouncedPhase = m.phase;
+            if (m.phase === 1 && prevPhase < 1) {
+              state.audio.playRadio(extractHoldLine(), { channel: "mission" });
+              setMissionBanner("HOLD THE LZ — Leaving pauses extract");
+              window.setTimeout(() => setMissionBanner(""), 4000);
+            } else if (m.phase === 2 && prevPhase < 2) {
+              state.audio.playRadio(extractBoardLine(), { channel: "mission" });
+              setMissionBanner("BIRD ON STATION — Board the helicopter");
+              window.setTimeout(() => setMissionBanner(""), 4500);
+            }
+          }
+          // Pulse extract markers during hold.
+          for (const g of state.missionMarkers) {
+            if (!g.userData.extractRing) continue;
+            const pulse = 0.45 + Math.sin(state.clock.getElapsed() * 3.2) * 0.2;
+            g.children.forEach((child) => {
+              if (child instanceof THREE.Mesh && child.material instanceof THREE.MeshBasicMaterial) {
+                child.material.opacity = Math.min(0.85, pulse + (m.phase >= 2 ? 0.2 : 0));
+              }
+            });
+          }
+          // Timed pressure while holding — keeps extract contested even if some hostiles remain.
+          if (m.phase === 1 && !m.complete && state.clock.getElapsed() >= state.extractReinforceAt) {
+            const need = Math.max(0, 6 - state.enemies.length);
+            for (let i = 0; i < Math.min(3, need); i += 1) spawnEnemy(state);
+            if (need > 0) state.squads = assignSquads(state.enemies);
+            state.extractReinforceAt = state.clock.getElapsed() + 7 + Math.random() * 4;
+          }
+        }
+
         if (state.activeMission.complete && !prevComplete) {
+          if (state.activeMission.endsRun || state.activeMission.type === "extraction") {
+            completeExtractionVictory(state);
+            return;
+          }
           state.score += state.activeMission.scoreBonus;
           state.audio.playRadio(objectiveCompleteLine(state.activeMission.title), {
             channel: "mission",
@@ -3067,53 +4250,120 @@ export default function BradleysDarkSectorThreeJS() {
           window.setTimeout(() => setMissionBanner(""), 4200);
           if (state.activeMission.type === "sabotage") {
             for (const tank of state.activeMission.markers.filter((m) => m.id.startsWith("tank"))) {
-              spawnDestructionBurst(state.scene, tank.x, tank.z);
+              spawnDestructionBurst(state.scene, tank.x, tank.z, state.atmosphere);
             }
             state.audio.playExplosion(12);
           }
         }
       }
 
-      const missionDone = !state.activeMission || state.activeMission.complete || state.activeMission.type === "waves";
-      const waveClear = state.running && state.enemies.length === 0 && missionDone;
-      if (waveClear) {
-        if (state.activeMission && state.activeMission.type !== "waves" && !state.activeMission.complete) {
-          for (let i = 0; i < 3; i += 1) spawnEnemy(state);
+      // Reinforcements during incomplete structured missions (was unreachable: waveClear
+      // previously required missionDone, which needs complete for non-wave missions).
+      if (state.running && state.enemies.length === 0) {
+        const mission = state.activeMission;
+        const structuredIncomplete = mission && mission.type !== "waves" && !mission.complete;
+        if (structuredIncomplete) {
+          for (let i = 0; i < 4; i += 1) spawnEnemy(state);
           state.squads = assignSquads(state.enemies);
         } else {
-          state.wave += 1;
-          state.health = Math.min(100, state.health + 30);
-          const m4Max = applyAttachmentMods(WEAPONS.m4, progression.loadout.find((l) => l.weapon === "m4")?.attachments || []).maxAmmo;
-          const smgMax = applyAttachmentMods(WEAPONS.smg, progression.loadout.find((l) => l.weapon === "smg")?.attachments || []).maxAmmo;
-          const pistolMax = applyAttachmentMods(WEAPONS.pistol, progression.loadout.find((l) => l.weapon === "pistol")?.attachments || []).maxAmmo;
-          state.weaponAmmo = { m4: m4Max, smg: smgMax, pistol: pistolMax };
-          state.maxAmmo = state.weaponAmmo[state.activeWeapon];
-          state.ammo = state.weaponAmmo[state.activeWeapon];
-          state.grenadesRemaining = Math.min(3, state.grenadesRemaining + 1);
-          if (state.wave % 2 === 0) state.medkits += 1;
-          beginWaveContent(state);
+          const missionDone = !mission || mission.complete || mission.type === "waves";
+          if (missionDone && !state.extractSucceeded) {
+            state.wave += 1;
+            state.health = Math.min(state.maxHealth, state.health + WAVE_CLEAR_ARMOR_BONUS);
+            const m4Max = applyAttachmentMods(WEAPONS.m4, progressionRef.current.loadout.find((l) => l.weapon === "m4")?.attachments || []).maxAmmo;
+            const smgMax = applyAttachmentMods(WEAPONS.smg, progressionRef.current.loadout.find((l) => l.weapon === "smg")?.attachments || []).maxAmmo;
+            const pistolMax = applyAttachmentMods(WEAPONS.pistol, progressionRef.current.loadout.find((l) => l.weapon === "pistol")?.attachments || []).maxAmmo;
+            state.weaponAmmo = { m4: m4Max, smg: smgMax, pistol: pistolMax };
+            state.maxAmmo = state.weaponAmmo[state.activeWeapon];
+            state.ammo = state.weaponAmmo[state.activeWeapon];
+            state.grenadesRemaining = Math.min(MAX_GRENADES, state.grenadesRemaining + 1);
+            if (state.wave % 2 === 0) state.medkits += 1;
+            if (state.pickups) respawnPickupsAfterWave(state.pickups, state.clock.getElapsed(), state.wave);
+            beginWaveContent(state);
+          }
         }
       }
 
-      const missionElapsed = state.clock.elapsedTime - state.missionStartedAt;
+      const missionElapsed = state.clock.getElapsed() - state.missionStartedAt;
+
+      // Mid-wave pressure — never let the yard go quiet for long.
+      if (
+        state.running
+        && state.enemies.length > 0
+        && state.enemies.length <= PRESSURE_SPAWN_THRESHOLD
+        && missionElapsed >= state.nextPressureSpawnAt
+      ) {
+        const cap = MAX_ALIVE_ENEMIES() - state.enemies.length;
+        const toSpawn = Math.min(state.activeSceneId === "compound" ? 3 : 2, cap);
+        for (let i = 0; i < toSpawn; i += 1) spawnEnemy(state);
+        if (toSpawn > 0) state.squads = assignSquads(state.enemies);
+        state.nextPressureSpawnAt = missionElapsed + 9 + Math.random() * 5;
+      }
+
+      const fxQuality = effectiveFxQuality(state);
+      const inCombat = state.enemies.length >= 2;
+      state.battlefieldChaos.active = true;
+      updateBattlefieldChaos(
+        state.battlefieldChaos,
+        state.scene,
+        state.atmosphere,
+        {
+          fxScale: state.quality.getFxScale(),
+          lowPower: state.atmosphere.lowPower,
+          elapsed: missionElapsed,
+          playerX: state.player.position.x,
+          playerZ: state.player.position.z,
+          inCombat,
+          onDistantExplosion: (x, z, dist) => {
+            state.audio.playExplosion(dist);
+            if (fxQuality >= 0.35) {
+              spawnAmbientImpactSpark(
+                state.combatFx,
+                new THREE.Vector3(x, 0.15, z),
+                fxQuality,
+              );
+            }
+          },
+          onArtilleryThump: () => {
+            state.audio.playArtilleryThump();
+            if (allowRadioCue("artillery", 12000)) {
+              state.audio.playRadio(battlefieldChaosLine(), { channel: "mission" });
+            }
+          },
+          onDistantGunfire: () => {
+            if (Math.random() < 0.55) state.audio.playDistantGunfire();
+          },
+          onRadioLine: (kind) => {
+            if (kind === "qrf" && allowRadioCue("qrf", 22000)) {
+              state.audio.playRadio(qrfInboundLine(), { channel: "mission" });
+            } else if (kind === "vehicle" && allowRadioCue("vehicle", 16000)) {
+              state.audio.playRadio(vehicleBoomLine(), { channel: "mission" });
+              state.audio.playVehicleBoom();
+            }
+          },
+        },
+        dt,
+      );
+
       if (state.wave > state.announcedWave) {
         state.announcedWave = state.wave;
-        state.nextRadioAt = missionElapsed + 24 + Math.random() * 12;
+        state.nextRadioAt = missionElapsed + 18 + Math.random() * 10;
         state.audio.playRadio(waveInboundLine(state.wave), {
           channel: "mission",
         });
       } else if (missionElapsed >= state.nextRadioAt) {
         state.audio.playRadio(missionAmbientLine(), { channel: "mission" });
-        state.nextRadioAt = missionElapsed + 28 + Math.random() * 16;
+        state.nextRadioAt = missionElapsed + 18 + Math.random() * 12;
       }
 
       if (missionElapsed >= state.nextDistantFireAt) {
         state.audio.playDistantGunfire();
-        state.nextDistantFireAt = missionElapsed + 9 + Math.random() * 14;
+        state.nextDistantFireAt = missionElapsed + 5 + Math.random() * 7;
       }
       if (missionElapsed >= state.nextCalloutAt && state.enemies.length > 0) {
-        state.audio.playEnemyCallout(enemyCalloutLine());
-        state.nextCalloutAt = missionElapsed + 10 + Math.random() * 12;
+        const callout = Math.random() < 0.42 ? contactDirectionLine() : enemyCalloutLine();
+        state.audio.playEnemyCallout(callout);
+        state.nextCalloutAt = missionElapsed + 6 + Math.random() * 7;
       }
     }
 
@@ -3137,7 +4387,7 @@ export default function BradleysDarkSectorThreeJS() {
           }
         : missionText || getWaveDirective(state.wave);
     if (state.running && state.missionStartedAt > 0) {
-      state.lastMissionTime = formatMissionTime(state.clock.elapsedTime - state.missionStartedAt);
+      state.lastMissionTime = formatMissionTime(state.clock.getElapsed() - state.missionStartedAt);
     }
     const missionTime = state.lastMissionTime || "00:00";
 
@@ -3147,12 +4397,40 @@ export default function BradleysDarkSectorThreeJS() {
     const interactNear = state.gameMode === "solo"
       ? nearestInteractMarker(state.activeMission, state.player.position.x, state.player.position.z)
       : null;
-    const subtitle = state.settings.subtitles && state.gameMode === "solo" && state.activeMission
-      ? state.activeMission.briefing
-      : "";
+    const alliedNear =
+      state.gameMode === "solo" && state.activeSceneId === "compound"
+        ? nearestAlliedPrompt(state.alliedNpcState, state.player.position.x, state.player.position.z)
+        : null;
+    const alliedSubtitle =
+      state.gameMode === "solo" && state.activeSceneId === "compound" && state.settings.subtitles
+        ? alliedRadioSubtitle(state.alliedNpcState, nowMs)
+        : "";
+    const subtitle =
+      alliedSubtitle ||
+      (state.settings.subtitles && state.gameMode === "solo" && state.activeMission
+        ? state.activeMission.briefing
+        : "");
+
+    const hudKeys = keysRef.current;
+    const hudMoving =
+      Boolean(hudKeys.w || hudKeys.a || hudKeys.s || hudKeys.d || hudKeys.ArrowUp || hudKeys.ArrowDown || hudKeys.ArrowLeft || hudKeys.ArrowRight);
+    const hudSprinting = hudMoving && Boolean(hudKeys.shift) && !state.crouching;
+    const loadoutAttachments =
+      progressionRef.current.loadout.find((l) => l.weapon === state.activeWeapon)?.attachments || [];
+    const spreadRing = computeSpreadVisual(
+      WEAPONS[state.activeWeapon],
+      state.fireHeat,
+      state.adsBlend,
+      {
+        moving: hudMoving,
+        sprinting: hudSprinting,
+        accuracyBonus: applyAttachmentMods(WEAPONS[state.activeWeapon], loadoutAttachments).accuracyBonus,
+      },
+    );
 
     const nextHud: Hud = {
       health: Math.round(state.health),
+      maxHealth: state.maxHealth,
       ammo: state.reload > 0 ? "RELOAD" : state.ammo,
       activeWeapon: state.activeWeapon,
       m4Ammo: state.weaponAmmo.m4,
@@ -3189,7 +4467,8 @@ export default function BradleysDarkSectorThreeJS() {
         ? 1 - rangeStats.challengeTimeLeft / RANGE_CHALLENGE_SECONDS
         : state.activeMission?.progress || 0,
       suppression: suppressionHudOpacity(state.combatFx),
-      rank: rankFromXp(progression.xp).rank,
+      spreadRing,
+      rank: rankFromXp(progressionRef.current.xp).rank,
       difficulty: state.difficulty,
       crouching: state.crouching,
       aiming: state.adsBlend > 0.35,
@@ -3198,9 +4477,14 @@ export default function BradleysDarkSectorThreeJS() {
         : subtitle,
       interactPrompt: state.gameMode === "range" && state.shootingRange?.nearRefill(state.player.position)
         ? "Ammo station — magazines topped"
-        : interactNear?.prompt || "",
+        : state.pickupPrompt
+          ? state.pickupPrompt
+          : alliedNear && (!interactNear || alliedNear.dist <= interactNear.dist)
+            ? alliedNear.prompt
+            : interactNear?.prompt || "",
       missionBanner,
       unlockNotice: unlockToast,
+      supplyNotice: "",
       rangeHits: rangeStats?.challengeActive ? rangeStats.challengeHits : (rangeStats?.hits ?? 0),
       rangeMisses: rangeStats?.challengeActive ? rangeStats.challengeMisses : (rangeStats?.misses ?? 0),
       rangeShots: rangeStats?.challengeActive ? rangeStats.challengeShots : (rangeStats?.shots ?? 0),
@@ -3222,8 +4506,11 @@ export default function BradleysDarkSectorThreeJS() {
     };
 
     hudTimerRef.current += dt;
-    const hudKey = `${nextHud.health}|${nextHud.ammo}|${nextHud.activeWeapon}|${nextHud.m4Ammo}|${nextHud.smgAmmo}|${nextHud.pistolAmmo}|${nextHud.grenades}|${nextHud.score}|${nextHud.enemies}|${nextHud.wave}|${nextHud.missionTime}|${nextHud.medkits}|${nextHud.streak}|${nextHud.modelMode}|${nextHud.gameMode}|${nextHud.kills}|${nextHud.deaths}|${nextHud.pvpPlayers}|${nextHud.pvpStatus}|${nextHud.objective}|${nextHud.contact}|${nextHud.damageBearing}|${nextHud.missionTitle}|${nextHud.missionProgress.toFixed(2)}|${nextHud.suppression.toFixed(2)}|${nextHud.crouching}|${nextHud.aiming}|${nextHud.subtitle}|${nextHud.interactPrompt}|${nextHud.missionBanner}|${nextHud.unlockNotice}|${nextHud.rangeHits}|${nextHud.rangeMisses}|${nextHud.rangeAccuracy.toFixed(0)}|${nextHud.rangeChallengeActive}|${nextHud.rangeChallengeScore}|${nextHud.rangeHighestBadge}|${rangeResult?.endedAt ?? 0}`;
-    if (hudTimerRef.current >= 0.1 || hudKey !== lastHudKeyRef.current) {
+    const hudKey = `${nextHud.health}|${nextHud.ammo}|${nextHud.activeWeapon}|${nextHud.m4Ammo}|${nextHud.smgAmmo}|${nextHud.pistolAmmo}|${nextHud.grenades}|${nextHud.score}|${nextHud.enemies}|${nextHud.wave}|${nextHud.missionTime}|${nextHud.medkits}|${nextHud.streak}|${nextHud.modelMode}|${nextHud.gameMode}|${nextHud.kills}|${nextHud.deaths}|${nextHud.pvpPlayers}|${nextHud.pvpStatus}|${nextHud.objective}|${nextHud.contact}|${nextHud.damageBearing}|${nextHud.missionTitle}|${nextHud.missionProgress.toFixed(2)}|${nextHud.suppression.toFixed(2)}|${nextHud.spreadRing.toFixed(2)}|${nextHud.crouching}|${nextHud.aiming}|${nextHud.subtitle}|${nextHud.interactPrompt}|${nextHud.missionBanner}|${nextHud.unlockNotice}|${nextHud.rangeHits}|${nextHud.rangeMisses}|${nextHud.rangeAccuracy.toFixed(0)}|${nextHud.rangeChallengeActive}|${nextHud.rangeChallengeScore}|${nextHud.rangeHighestBadge}|${rangeResult?.endedAt ?? 0}`;
+    // Skip React HUD writes while immersive — world-space XRHud already covers this, and
+    // React re-renders during XR frames contribute to Quest compositor freezes.
+    const immersive = isXrPresenting(state.renderer, state.xr);
+    if (!immersive && (hudTimerRef.current >= 0.1 || hudKey !== lastHudKeyRef.current)) {
       hudTimerRef.current = 0;
       if (hudKey !== lastHudKeyRef.current) {
         lastHudKeyRef.current = hudKey;
@@ -3246,6 +4533,15 @@ export default function BradleysDarkSectorThreeJS() {
     console.assert(60 / WEAPONS.m4.fireInterval >= 650, "M4 rapid fire should run at least 650 RPM.");
     console.assert(WEAPONS.m4.sustainedSpread > WEAPONS.m4.baseSpread, "M4 sustained fire should increase spread.");
     console.assert(ENEMY_TYPES.every((t) => t.range > 0 && t.damage > 0), "Every enemy type should define range and damage.");
+    console.assert(
+      ENEMY_TYPES.every((t) => t.speed >= 3.2 && t.speed <= 6),
+      "Enemy world speeds should sit in a tactical jog band (not slow-mo shuffle)."
+    );
+    console.assert(
+      (ENEMY_TYPES.find((t) => t.name === "Scout")?.speed || 0)
+        > (ENEMY_TYPES.find((t) => t.name === "Heavy")?.speed || 0),
+      "Scout should outpace Heavy."
+    );
     console.assert(SHOOT_ANIMATION_LOCK_SECONDS > 0, "Shoot animation lock should be positive.");
     const thinPools = assertRadioPoolsVaried(2);
     console.assert(thinPools.length === 0, `Radio pools need variety: ${thinPools.join(", ")}`);
@@ -3253,20 +4549,53 @@ export default function BradleysDarkSectorThreeJS() {
       poolRotatesWithoutImmediateRepeat("missionAmbient", MISSION_AMBIENT_LINES),
       "Mission ambient radio should rotate without immediate repeats."
     );
+    const extractWave = pickMissionForWave(14);
+    console.assert(extractWave.type === "extraction", "Wave 14 should schedule helicopter extraction.");
+    console.assert(extractWave.endsRun === true, "Extraction mission should end the solo run.");
+    let extract = createExtractionMission();
+    const lz = extract.markers[0]!;
+    extract = updateMission(extract, {
+      playerX: lz.x,
+      playerZ: lz.z,
+      enemiesAlive: 3,
+      killsThisFrame: 0,
+      dt: 0.5,
+      interactPressed: false,
+    });
+    console.assert(extract.objectives[0]?.done === true, "Standing on LZ should complete reach objective.");
+    console.assert(extract.phase === 1, "Extraction should enter hold phase on the LZ.");
+    const paused = updateMission(extract, {
+      playerX: lz.x + 40,
+      playerZ: lz.z,
+      enemiesAlive: 3,
+      killsThisFrame: 0,
+      dt: 5,
+      interactPressed: false,
+    });
+    console.assert(paused.progress === extract.progress, "Leaving the LZ should pause hold progress.");
+    extract = updateMission(extract, {
+      playerX: lz.x,
+      playerZ: lz.z,
+      enemiesAlive: 2,
+      killsThisFrame: 0,
+      dt: EXTRACT_HOLD_SEC + 1,
+      interactPressed: false,
+    });
+    console.assert(extract.objectives[1]?.done === true, "Full hold on LZ should ready the bird.");
+    console.assert(extract.complete && extract.endsRun, "Holding through ready while on the LZ should board and end the run.");
   }
 
   function resetLoadout(state: GameState) {
-    const m4Max = applyAttachmentMods(WEAPONS.m4, progression.loadout.find((l) => l.weapon === "m4")?.attachments || []).maxAmmo;
-    const smgMax = applyAttachmentMods(WEAPONS.smg, progression.loadout.find((l) => l.weapon === "smg")?.attachments || []).maxAmmo;
-    const pistolMax = applyAttachmentMods(WEAPONS.pistol, progression.loadout.find((l) => l.weapon === "pistol")?.attachments || []).maxAmmo;
+    const m4Max = applyAttachmentMods(WEAPONS.m4, progressionRef.current.loadout.find((l) => l.weapon === "m4")?.attachments || []).maxAmmo;
+    const smgMax = applyAttachmentMods(WEAPONS.smg, progressionRef.current.loadout.find((l) => l.weapon === "smg")?.attachments || []).maxAmmo;
+    const pistolMax = applyAttachmentMods(WEAPONS.pistol, progressionRef.current.loadout.find((l) => l.weapon === "pistol")?.attachments || []).maxAmmo;
     const diff = DIFFICULTY[state.difficulty] || DIFFICULTY.operator;
-    state.health = Math.round(100 * diff.playerHpMul);
+    state.maxHealth = maxHealthForDifficulty(diff.playerHpMul);
+    state.health = state.maxHealth;
     state.weaponAmmo = { m4: m4Max, smg: smgMax, pistol: pistolMax };
     state.activeWeapon = "m4";
     state.weapon = state.weaponViews.m4;
-    state.weaponViews.m4.visible = true;
-    state.weaponViews.smg.visible = false;
-    state.weaponViews.pistol.visible = false;
+    applyPlayerWeaponVisibility(state.weaponViews);
     state.ammo = state.weaponAmmo.m4;
     state.maxAmmo = m4Max;
     state.reload = 0;
@@ -3274,11 +4603,14 @@ export default function BradleysDarkSectorThreeJS() {
     state.fireHeat = 0;
     state.fireCooldown = 0;
     state.recoil = 0;
+    state.recoilYaw = 0;
     state.adsHeld = false;
     state.adsBlend = 0;
     state.grenadesRemaining = 3;
     state.camera.fov = state.settings.fov;
-    state.camera.updateProjectionMatrix();
+    if (!isXrPresenting(state.renderer, state.xr)) {
+      state.camera.updateProjectionMatrix();
+    }
   }
 
   function disconnectPvp() {
@@ -3298,6 +4630,7 @@ export default function BradleysDarkSectorThreeJS() {
     const state = gameRef.current;
     if (!state) return;
     disposeShootingRange(state);
+    activateCombatScene(state, selectedScene);
     state.audio.stopRangeAudio();
     state.audio.setGameMode("solo");
     state.running = false;
@@ -3312,6 +4645,7 @@ export default function BradleysDarkSectorThreeJS() {
     lastHudKeyRef.current = "";
     setStarted(false);
     setGameOver(false);
+    setMissionOutcome(null);
   }
 
   function startShootingRange() {
@@ -3337,10 +4671,14 @@ export default function BradleysDarkSectorThreeJS() {
     state.bestStreak = 0;
     state.medkits = 0;
     state.health = 100;
-    state.missionStartedAt = state.clock.elapsedTime;
+    state.missionStartedAt = state.clock.getElapsed();
     state.lastMissionTime = "00:00";
     state.playerDamageCooldown = 0;
     state.enemyVolleyCooldown = 0;
+    state.enemyGrenadeLockUntil = 0;
+    state.playerStationarySec = 0;
+    state.lastPlayerX = state.player.position.x;
+    state.lastPlayerZ = state.player.position.z;
     state.nextRadioAt = Number.POSITIVE_INFINITY;
     state.nextDistantFireAt = Number.POSITIVE_INFINITY;
     state.nextCalloutAt = Number.POSITIVE_INFINITY;
@@ -3354,7 +4692,9 @@ export default function BradleysDarkSectorThreeJS() {
     state.audio.setGameMode("range");
     state.settings = settings;
     state.camera.fov = settings.fov;
-    state.camera.updateProjectionMatrix();
+    if (!isXrPresenting(state.renderer, state.xr)) {
+      state.camera.updateProjectionMatrix();
+    }
 
     const range = createShootingRange(state.scene);
     state.shootingRange = range;
@@ -3381,14 +4721,28 @@ export default function BradleysDarkSectorThreeJS() {
   function syncXrAfterModeStart(state: GameState) {
     if (!state.xr?.presenting) return;
     state.xr.menu.hide();
-    state.xr.rig.root.position.set(state.player.position.x, state.player.position.y, state.player.position.z);
-    state.xr.rig.root.rotation.set(0, state.yaw, 0);
+    state.xr.hud.setVisible(true);
+    state.xr.rig.syncFromPlayer(state.player.position, state.yaw);
     attachWeaponsToGrip(state.xr, state.weaponViews, state.activeWeapon);
+  }
+
+  function refreshAlliedNpcs(state: GameState) {
+    if (state.activeSceneId !== "compound") {
+      resetAlliedNpcSession(state.alliedNpcState);
+      return;
+    }
+    ensureAlliedNpcs(state.alliedNpcState, buildAlliedNpcContext(state));
   }
 
   function startMission() {
     const state = gameRef.current;
     if (!state) return;
+    const sceneId = selectedScene;
+    const forceExtract =
+      sceneId === "compound" &&
+      typeof window !== "undefined" &&
+      new URLSearchParams(window.location.search).has("forceExtract");
+
     disconnectPvp();
     clearRemotePlayers(state);
     disposeShootingRange(state);
@@ -3401,17 +4755,22 @@ export default function BradleysDarkSectorThreeJS() {
     state.pvpKills = 0;
     state.pvpDeaths = 0;
     state.running = true;
+    state.extractSucceeded = false;
+    state.extractCinematic = false;
+    activateCombatScene(state, sceneId);
     resetLoadout(state);
     state.score = 0;
-    state.wave = 1;
+    state.wave = forceExtract ? 14 : 1;
     state.sessionKills = 0;
     state.killStreak = 0;
     state.bestStreak = 0;
     state.medkits = 2;
-    state.missionStartedAt = state.clock.elapsedTime;
+    state.missionStartedAt = state.clock.getElapsed();
     state.lastMissionTime = "00:00";
     state.playerDamageCooldown = 3;
     state.enemyVolleyCooldown = 1.25;
+    state.enemyGrenadeLockUntil = state.clock.getElapsed() + 18;
+    state.playerStationarySec = 0;
     state.audio.unlock();
     state.audio.setMuted(audioMuted);
     state.audio.setVolumes({
@@ -3421,24 +4780,69 @@ export default function BradleysDarkSectorThreeJS() {
     });
     state.settings = settings;
     state.camera.fov = settings.fov;
-    state.camera.updateProjectionMatrix();
-    state.audio.playRadio(missionStartLine(), {
+    if (!isXrPresenting(state.renderer, state.xr)) {
+      state.camera.updateProjectionMatrix();
+    }
+    state.audio.playRadio(forceExtract ? extractInboundLine() : missionStartLine(), {
       channel: "mission",
     });
-    state.nextRadioAt = 28 + Math.random() * 12;
-    state.nextDistantFireAt = 12;
-    state.nextCalloutAt = 8;
-    state.announcedWave = 1;
-    state.player.position.set(0, 0, 10);
+    state.nextRadioAt = 16 + Math.random() * 8;
+    state.nextDistantFireAt = 6;
+    state.nextCalloutAt = 5;
+    state.nextPressureSpawnAt = 7 + Math.random() * 3;
+    state.battlefieldChaos = initBattlefieldChaos();
+    state.battlefieldChaos.active = true;
+    state.announcedWave = forceExtract ? 14 : 1;
+    const spawn =
+      sceneId === "compound"
+        ? { x: forceExtract ? -18 : 0, z: forceExtract ? 8 : 10, yaw: 0 }
+        : {
+            x: state.altSceneSession?.playerStart.x ?? 0,
+            z: state.altSceneSession?.playerStart.z ?? 10,
+            yaw: state.altSceneSession?.playerStart.yaw ?? 0,
+          };
+    state.player.position.set(spawn.x, 0, spawn.z);
     state.player.userData.baseY = 0;
-    state.yaw = 0;
+    state.yaw = spawn.yaw;
+    state.lastPlayerX = spawn.x;
+    state.lastPlayerZ = spawn.z;
     state.pitch = 0;
     state.contactUntil = 0;
     state.lastDamageBearing = null;
     state.crouching = false;
     state.dyingEnemies = [];
+    resetAlliedNpcSession(state.alliedNpcState);
+    refreshAlliedNpcs(state);
+    if (sceneId === "compound" && state.pickups) resetPickupSession(state.pickups);
     clearAllEnemies(state);
-    beginWaveContent(state);
+    if (forceExtract) {
+      // Ensure extract mission even if pool rotation changes.
+      state.coverPoints = buildCoverPointsFromColliders(state.colliders);
+      const token = (state.waveContentToken = (state.waveContentToken || 0) + 1);
+      void (async () => {
+        await waitForEnemyTemplate(state);
+        if (state.disposed || !state.running || state.waveContentToken !== token) return;
+        const diff = DIFFICULTY[state.difficulty] || DIFFICULTY.operator;
+        const count = waveEnemyTarget(state.wave, diff.enemyCountMul);
+        for (let i = 0; i < count; i += 1) {
+          try {
+            spawnEnemy(state);
+          } catch (err) {
+            console.warn("[BDS] spawnEnemy failed", err);
+          }
+        }
+        state.squads = assignSquads(state.enemies);
+        state.activeMission = createExtractionMission();
+        state.extractAnnouncedPhase = -1;
+        state.extractReinforceAt = state.clock.getElapsed() + 6;
+        if (state.extractionHeli) resetExtractionHelicopter(state.extractionHeli);
+        syncMissionMarkers(state);
+        setMissionBanner("EXTRACT AUTHORIZED — Reach the amber LZ and hold for the bird");
+        window.setTimeout(() => setMissionBanner(""), 5200);
+      })();
+    } else {
+      scheduleWaveContent(state);
+    }
     const nextProg = { ...progression, preferredDifficulty: selectedDifficulty };
     saveProgression(nextProg);
     setProgression(nextProg);
@@ -3446,6 +4850,7 @@ export default function BradleysDarkSectorThreeJS() {
     setPvpError(null);
     setStarted(true);
     setGameOver(false);
+    setMissionOutcome(null);
     syncXrAfterModeStart(state);
     requestAimLock(state.renderer.domElement);
   }
@@ -3468,10 +4873,14 @@ export default function BradleysDarkSectorThreeJS() {
     state.killStreak = 0;
     state.bestStreak = 0;
     state.medkits = 2;
-    state.missionStartedAt = state.clock.elapsedTime;
+    state.missionStartedAt = state.clock.getElapsed();
     state.lastMissionTime = "00:00";
     state.playerDamageCooldown = 0;
     state.enemyVolleyCooldown = 0;
+    state.enemyGrenadeLockUntil = 0;
+    state.playerStationarySec = 0;
+    state.lastPlayerX = spawnX;
+    state.lastPlayerZ = spawnZ;
     state.nextRadioAt = Number.POSITIVE_INFINITY;
     resetLoadout(state);
     state.player.position.set(spawnX, 0, spawnZ);
@@ -3610,6 +5019,7 @@ export default function BradleysDarkSectorThreeJS() {
     client.connect();
   }
 
+  // Global input listeners bind once; handlers reach live game state through refs.
   useEffect(() => {
     runSmokeTests();
     const down = (e: KeyboardEvent) => {
@@ -3662,10 +5072,8 @@ export default function BradleysDarkSectorThreeJS() {
           });
         }
       }
-      if (state?.running && key === "f" && !keysRef.current.__medkitHeld && state.medkits > 0 && state.health < 100) {
-        state.medkits -= 1;
-        state.health = Math.min(100, state.health + 45);
-        keysRef.current.__medkitHeld = true;
+      if (state?.running && key === "f" && !keysRef.current.__medkitHeld) {
+        if (gameRef.current && consumeMedkit(gameRef.current)) keysRef.current.__medkitHeld = true;
       }
       if (isSpace) e.preventDefault();
     };
@@ -3684,6 +5092,7 @@ export default function BradleysDarkSectorThreeJS() {
     };
   }, []);
 
+  // Game bootstrap runs once per mount; the loop reads live state, not render closures.
   useEffect(() => {
     const container = mountRef.current;
     if (!container) return undefined;
@@ -3695,17 +5104,38 @@ export default function BradleysDarkSectorThreeJS() {
         xrPresentingRef.current = presenting;
         setXrPresenting(presenting);
         if (presenting) {
+          state.quality.setTier("xr", xrGraphicsConfig().pixelRatioCap);
+          setAtmosphereLowPower(state.atmosphere, true);
           if (document.pointerLockElement) document.exitPointerLock();
-          state.xr?.rig.root.position.set(
-            state.player.position.x,
-            state.player.position.y,
-            state.player.position.z
-          );
-          state.xr?.rig.root.rotation.set(0, state.yaw, 0);
+          state.xr?.rig.syncFromPlayer(state.player.position, state.yaw);
           if (!state.running) state.xr?.menu.showMain();
-          else state.xr?.menu.hide();
+          else {
+            state.xr?.menu.hide();
+            state.xr?.hud.setVisible(true);
+          }
+          // QA: ?autoSolo=1 starts compound shortly after immersive present (Quest playtest).
+          try {
+            if (
+              !state.running &&
+              typeof window !== "undefined" &&
+              new URLSearchParams(window.location.search).has("autoSolo")
+            ) {
+              window.setTimeout(() => {
+                if (!gameRef.current?.xr?.presenting || gameRef.current.running) return;
+                xrMenuHandlerRef.current("solo");
+              }, 1400);
+            }
+          } catch {
+            /* ignore */
+          }
         } else if (state.xr) {
           detachWeaponsFromGrip(state.xr, state.camera, state.weaponViews);
+          const mobile = isTouchDevice();
+          state.quality.setTier(
+            mobile ? "mobile" : "desktop",
+            mobile ? 1.25 : graphicsConfig(state.settings.graphics).pixelRatioCap,
+          );
+          setAtmosphereLowPower(state.atmosphere, mobile || state.settings.graphics === "low");
         }
       },
       onMenuAction: (action) => xrMenuHandlerRef.current(action),
@@ -3738,7 +5168,7 @@ export default function BradleysDarkSectorThreeJS() {
     };
     const onContextMenu = (e: MouseEvent) => e.preventDefault();
     const onMouseMove = (e: MouseEvent) => {
-      if (state.xr?.presenting) return;
+      if (isXrPresenting(state.renderer, state.xr)) return;
       const locked = document.pointerLockElement === state.renderer.domElement;
       if (locked) {
         const adsScale = THREE.MathUtils.lerp(1, ADS_SENSITIVITY_MULTIPLIER, state.adsBlend);
@@ -3774,6 +5204,7 @@ export default function BradleysDarkSectorThreeJS() {
     };
 
     const onTouchPointerDown = (e: PointerEvent) => {
+      if (isXrPresenting(state.renderer, state.xr)) return;
       if (e.pointerType !== "touch" || e.clientX < window.innerWidth * 0.44) return;
       e.preventDefault();
       mobileInputRef.current.lastTouchAt = performance.now();
@@ -3783,6 +5214,7 @@ export default function BradleysDarkSectorThreeJS() {
       state.renderer.domElement.setPointerCapture(e.pointerId);
     };
     const onTouchPointerMove = (e: PointerEvent) => {
+      if (isXrPresenting(state.renderer, state.xr)) return;
       if (e.pointerType !== "touch" || mobileInputRef.current.lookPointerId !== e.pointerId) return;
       e.preventDefault();
       const dx = e.clientX - mobileInputRef.current.lookX;
@@ -3825,18 +5257,87 @@ export default function BradleysDarkSectorThreeJS() {
     window.addEventListener("pointerup", onGlobalPointerEnd, true);
     window.addEventListener("pointercancel", onGlobalPointerEnd, true);
 
+    let xrFrameCount = 0;
     const animate = () => {
       if (state.disposed) return;
-      const dt = Math.min(0.033, state.clock.getDelta());
-      if (state.running || state.xr?.presenting) updateGame(state, dt);
-      state.mixers.forEach((mixer) => mixer.update(dt));
-      updateAtmosphereSystem(state.atmosphere, state.scene, state.clock.elapsedTime, dt);
-      state.renderer.render(state.scene, state.camera);
+      try {
+        const gl = state.renderer.getContext() as WebGLRenderingContext & { isContextLost?: () => boolean };
+        if (gl?.isContextLost?.()) return;
+
+        const presenting = Boolean(state.xr?.presenting || state.renderer.xr.isPresenting);
+        // XR: tighter dt cap so a dropped frame cannot become a multi-meter locomote jump.
+        state.clock.update();
+        const dt = Math.min(presenting ? 0.022 : 0.033, state.clock.getDelta());
+        if (state.running || presenting) updateGame(state, dt);
+        // Keep extract bird animating through approach / depart after run end.
+        if (state.extractionHeli && state.extractionHeli.phase !== "hidden") {
+          const mission = state.activeMission;
+          const extract = mission?.type === "extraction" ? mission : null;
+          updateExtractionHelicopter(state.extractionHeli, {
+            dt,
+            holdProgress: extract?.progress ?? (state.extractSucceeded ? 1 : 0),
+            readyToBoard: Boolean(extract && extract.phase >= 2) || state.extractSucceeded,
+            extracted: state.extractSucceeded,
+            fxScale: state.quality.getFxScale(),
+            playerX: state.player.position.x,
+            playerZ: state.player.position.z,
+          });
+          if (state.extractCinematic) {
+            updateExtractCinematicCamera(state, dt);
+          }
+          if (presenting) {
+            state.audio.setRotorAudio(
+              heliAudioProximity(state.extractionHeli, state.player.position.x, state.player.position.z),
+            );
+          }
+        } else if (state.extractionHeli) {
+          if (state.extractCinematic) {
+            finishExtractCinematic(state);
+          }
+          state.audio.stopRotorAudio();
+        }
+        state.mixers.forEach((mixer) => {
+          const root = mixer.getRoot?.() as THREE.Object3D | undefined;
+          if (root?.userData?.enemy) {
+            const dx = root.position.x - state.player.position.x;
+            const dz = root.position.z - state.player.position.z;
+            const distSq = dx * dx + dz * dz;
+            // Far enemy clips at half rate — big CPU win with little visual cost.
+            if (distSq > 28 * 28 && (xrFrameCount & 1) === 1) return;
+          }
+          mixer.update(dt);
+        });
+        // Atmosphere every other frame on XR always; on desktop when under load (fxScale).
+        xrFrameCount += 1;
+        const atmoStride = presenting || state.quality.getFxScale() < 0.85 ? 2 : 1;
+        if (xrFrameCount % atmoStride === 0) {
+          updateAtmosphereSystem(state.atmosphere, state.scene, state.clock.getElapsed(), dt * atmoStride);
+        }
+        if (state.renderer.shadowMap.enabled && xrFrameCount % 3 === 0) {
+          state.renderer.shadowMap.needsUpdate = true;
+        }
+        state.renderer.render(state.scene, state.camera);
+      } catch (error) {
+        // Never let a single frame exception kill the XR animation loop (frozen HMD).
+        console.warn("[BDS] XR/frame update error", error);
+      }
     };
     state.renderer.setAnimationLoop(animate);
 
+    const onContextLost = (event: Event) => {
+      event.preventDefault();
+      console.warn("[BDS] WebGL context lost — ending XR session if active");
+      void endXRSession(state.renderer).catch(() => undefined);
+    };
+    const onContextRestored = () => {
+      console.warn("[BDS] WebGL context restored — reload recommended for VR");
+    };
+    state.renderer.domElement.addEventListener("webglcontextlost", onContextLost, false);
+    state.renderer.domElement.addEventListener("webglcontextrestored", onContextRestored, false);
+
     return () => {
       state.disposed = true;
+      state.clock.disconnect();
       const win = window as unknown as { __darkSector?: GameState };
       if (win.__darkSector === state) delete win.__darkSector;
       state.renderer.setAnimationLoop(null);
@@ -3844,6 +5345,8 @@ export default function BradleysDarkSectorThreeJS() {
         disposeXRRuntime(state.xr, state.renderer, state.scene, state.camera, state.weaponViews);
         state.xr = null;
       }
+      state.renderer.domElement.removeEventListener("webglcontextlost", onContextLost);
+      state.renderer.domElement.removeEventListener("webglcontextrestored", onContextRestored);
       window.removeEventListener("resize", onResize);
       state.renderer.domElement.removeEventListener("mousedown", onMouseDown);
       state.renderer.domElement.removeEventListener("contextmenu", onContextMenu);
@@ -3862,6 +5365,11 @@ export default function BradleysDarkSectorThreeJS() {
       disconnectPvp();
       clearRemotePlayers(state);
       disposeShootingRange(state);
+      if (state.extractionHeli) {
+        disposeExtractionHelicopter(state.extractionHeli, state.scene);
+        state.extractionHeli = null;
+      }
+      state.audio.stopRotorAudio();
       state.audio.dispose();
       state.renderer.dispose();
       if (state.renderer.domElement.parentElement) state.renderer.domElement.parentElement.removeChild(state.renderer.domElement);
@@ -3874,14 +5382,17 @@ export default function BradleysDarkSectorThreeJS() {
     switch (action) {
       case "solo":
         state.xr.menu.hide();
+        state.xr.hud.setVisible(true);
         startMission();
         break;
       case "range":
         state.xr.menu.hide();
+        state.xr.hud.setVisible(true);
         startShootingRange();
         break;
       case "resume":
         state.xr.menu.hide();
+        state.xr.hud.setVisible(true);
         break;
       case "settings": {
         const order: Array<30 | 45 | 90> = [30, 45, 90];
@@ -4043,20 +5554,91 @@ export default function BradleysDarkSectorThreeJS() {
           <div className="absolute bottom-0 left-1/2 h-3 w-1 -translate-x-1/2 bg-slate-950 ring-1 ring-slate-200/80" />
         </div>
       ) : !xrPresenting && !hud.aiming ? (
-        <div
-          data-testid="combat-crosshair"
-          className={`pointer-events-none absolute left-1/2 top-1/2 z-20 h-9 w-9 -translate-x-1/2 -translate-y-1/2 drop-shadow-[0_1px_2px_rgba(0,0,0,.95)] transition-transform duration-75 ${hitFlash ? "scale-125" : ""}`}
-        >
-          <div className={`absolute left-0 top-1/2 h-px w-3 -translate-y-1/2 border-y border-black/55 ${hitFlash ? "bg-rose-300" : "bg-[#e7eadf]"}`} />
-          <div className={`absolute right-0 top-1/2 h-px w-3 -translate-y-1/2 border-y border-black/55 ${hitFlash ? "bg-rose-300" : "bg-[#e7eadf]"}`} />
-          <div className={`absolute left-1/2 top-0 h-3 w-px -translate-x-1/2 border-x border-black/55 ${hitFlash ? "bg-rose-300" : "bg-[#e7eadf]"}`} />
-          <div className={`absolute bottom-0 left-1/2 h-3 w-px -translate-x-1/2 border-x border-black/55 ${hitFlash ? "bg-rose-300" : "bg-[#e7eadf]"}`} />
-          <div className={`absolute left-1/2 top-1/2 h-1.5 w-1.5 -translate-x-1/2 -translate-y-1/2 rotate-45 border border-black/80 ${hitFlash ? "bg-rose-300" : "bg-[#dce2cf]"}`} />
-          {hitFlash ? <div className="absolute inset-[-6px] rounded-full border-2 border-rose-400/90" /> : null}
-        </div>
+        <>
+          {hud.spreadRing > 0.06 ? (
+            <div
+              data-testid="combat-spread-ring"
+              className="pointer-events-none absolute left-1/2 top-1/2 z-[19] -translate-x-1/2 -translate-y-1/2 rounded-full border border-[#e7eadf]/40 transition-all duration-75"
+              style={{
+                width: `${36 + hud.spreadRing * 52}px`,
+                height: `${36 + hud.spreadRing * 52}px`,
+                opacity: 0.28 + hud.spreadRing * 0.42,
+              }}
+            />
+          ) : null}
+          <div
+            data-testid="combat-crosshair"
+            className={`pointer-events-none absolute left-1/2 top-1/2 z-20 h-9 w-9 -translate-x-1/2 -translate-y-1/2 drop-shadow-[0_1px_2px_rgba(0,0,0,.95)] transition-transform duration-75 ${
+              hitMarker === "kill" ? "scale-150" : hitMarker ? "scale-125" : ""
+            }`}
+          >
+            <div
+              className={`absolute left-0 top-1/2 h-px w-3 -translate-y-1/2 border-y border-black/55 ${
+                hitMarker === "kill"
+                  ? "bg-white"
+                  : hitMarker === "armor"
+                    ? "bg-amber-300"
+                    : hitMarker
+                      ? "bg-rose-300"
+                      : "bg-[#e7eadf]"
+              }`}
+            />
+            <div
+              className={`absolute right-0 top-1/2 h-px w-3 -translate-y-1/2 border-y border-black/55 ${
+                hitMarker === "kill"
+                  ? "bg-white"
+                  : hitMarker === "armor"
+                    ? "bg-amber-300"
+                    : hitMarker
+                      ? "bg-rose-300"
+                      : "bg-[#e7eadf]"
+              }`}
+            />
+            <div
+              className={`absolute left-1/2 top-0 h-3 w-px -translate-x-1/2 border-x border-black/55 ${
+                hitMarker === "kill"
+                  ? "bg-white"
+                  : hitMarker === "armor"
+                    ? "bg-amber-300"
+                    : hitMarker
+                      ? "bg-rose-300"
+                      : "bg-[#e7eadf]"
+              }`}
+            />
+            <div
+              className={`absolute bottom-0 left-1/2 h-3 w-px -translate-x-1/2 border-x border-black/55 ${
+                hitMarker === "kill"
+                  ? "bg-white"
+                  : hitMarker === "armor"
+                    ? "bg-amber-300"
+                    : hitMarker
+                      ? "bg-rose-300"
+                      : "bg-[#e7eadf]"
+              }`}
+            />
+            <div
+              className={`absolute left-1/2 top-1/2 h-1.5 w-1.5 -translate-x-1/2 -translate-y-1/2 rotate-45 border border-black/80 ${
+                hitMarker === "kill"
+                  ? "bg-white"
+                  : hitMarker === "armor"
+                    ? "bg-amber-200"
+                    : hitMarker
+                      ? "bg-rose-300"
+                      : "bg-[#dce2cf]"
+              }`}
+            />
+            {hitMarker === "kill" ? (
+              <div className="absolute inset-[-10px] rounded-full border-2 border-white/95 shadow-[0_0_12px_rgba(255,255,255,.55)]" />
+            ) : hitMarker === "armor" ? (
+              <div className="absolute inset-[-6px] rounded-full border-2 border-amber-400/90" />
+            ) : hitMarker ? (
+              <div className="absolute inset-[-6px] rounded-full border-2 border-rose-400/90" />
+            ) : null}
+          </div>
+        </>
       ) : null}
 
-      {hud.contact && !(hud.missionBanner || missionBanner) ? (
+      {!xrPresenting && hud.contact && !(hud.missionBanner || missionBanner) ? (
         <div
           className={`pointer-events-none absolute left-1/2 z-30 -translate-x-1/2 text-center ${
             touchDevice
@@ -4074,13 +5656,13 @@ export default function BradleysDarkSectorThreeJS() {
         </div>
       ) : null}
 
-      {hud.damageBearing === "left" ? (
+      {!xrPresenting && hud.damageBearing === "left" ? (
         <div className="pointer-events-none absolute left-3 top-1/2 z-30 -translate-y-1/2 border-l-4 border-rose-400 pl-2 text-2xl font-black text-rose-300">‹</div>
       ) : null}
-      {hud.damageBearing === "right" ? (
+      {!xrPresenting && hud.damageBearing === "right" ? (
         <div className="pointer-events-none absolute right-3 top-1/2 z-30 -translate-y-1/2 border-r-4 border-rose-400 pr-2 text-2xl font-black text-rose-300">›</div>
       ) : null}
-      {hud.damageBearing === "rear" ? (
+      {!xrPresenting && hud.damageBearing === "rear" ? (
         <div className="pointer-events-none absolute bottom-28 left-1/2 z-30 -translate-x-1/2 border border-rose-400/70 bg-black/70 px-3 py-1 text-[10px] font-black tracking-[0.3em] text-rose-200">
           REAR
         </div>
@@ -4205,10 +5787,7 @@ export default function BradleysDarkSectorThreeJS() {
                 }],
                 ["MED", "Use medkit", () => {
                   const state = gameRef.current;
-                  if (state && state.medkits > 0 && state.health < 100) {
-                    state.medkits -= 1;
-                    state.health = Math.min(100, state.health + 45);
-                  }
+                  if (state) consumeMedkit(state);
                 }],
               ].map(([label, ariaLabel, action]) => (
                 <button
@@ -4257,13 +5836,31 @@ export default function BradleysDarkSectorThreeJS() {
                 </h1>
 
                 <div className="mt-5 max-w-2xl border-l-2 border-amber-300/70 pl-4 sm:mt-7 sm:pl-5">
-                  <div className="text-[10px] font-bold uppercase tracking-[0.3em] text-amber-200/85">Operation Iron Veil · AO-17</div>
+                  <div className="text-[10px] font-bold uppercase tracking-[0.3em] text-amber-200/85">{sceneMeta(selectedScene).subtitle}</div>
                   <p className="mt-2 text-sm leading-relaxed text-slate-300 sm:text-base">
-                    Hostile forces have seized the compound. Breach the perimeter, control the yard, and hold through escalating counterattacks until extraction is authorized.
+                    {sceneMeta(selectedScene).briefing}
                   </p>
                 </div>
 
                 <div className="mt-6 flex w-full max-w-sm flex-col gap-3 sm:mt-8">
+                  <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">
+                    Combat AO
+                    <select
+                      value={selectedScene}
+                      onChange={(e) => setSelectedScene(e.target.value as CombatSceneId)}
+                      data-testid="scene-select"
+                      className="mt-1 w-full border border-slate-500/40 bg-black/70 px-3 py-2 text-xs font-bold uppercase tracking-wider text-slate-100"
+                    >
+                      {COMBAT_SCENE_IDS.map((id) => (
+                        <option key={id} value={id}>{sceneMeta(id).title}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <p className="text-[10px] leading-relaxed text-slate-500">
+                    Quick load: add <span className="font-mono text-cyan-200/80">?scene=desert</span>,{" "}
+                    <span className="font-mono text-cyan-200/80">urban</span>, or{" "}
+                    <span className="font-mono text-cyan-200/80">mountain</span> to the URL.
+                  </p>
                   <label className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400">
                     Difficulty
                     <select
@@ -4287,8 +5884,10 @@ export default function BradleysDarkSectorThreeJS() {
                     className="group flex min-h-14 w-full items-center justify-between border border-cyan-100/60 bg-cyan-100 px-5 text-left text-slate-950 shadow-[0_0_36px_rgba(103,232,249,.16)] transition hover:bg-white focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-cyan-200 sm:min-h-16 sm:px-6"
                   >
                     <span>
-                      <span className="block text-[9px] font-bold uppercase tracking-[0.25em] text-slate-600">Solo · Missions / Waves</span>
-                      <span className="mt-0.5 block text-sm font-black uppercase tracking-[0.12em] sm:text-base">Enter compound</span>
+                      <span className="block text-[9px] font-bold uppercase tracking-[0.25em] text-slate-600">Solo · Clear hostiles</span>
+                      <span className="mt-0.5 block text-sm font-black uppercase tracking-[0.12em] sm:text-base">
+                        Deploy — {sceneMeta(selectedScene).title}
+                      </span>
                     </span>
                     <span aria-hidden="true" className="text-2xl transition-transform group-hover:translate-x-1">→</span>
                   </button>
@@ -4355,8 +5954,8 @@ export default function BradleysDarkSectorThreeJS() {
                 <div className="grid grid-cols-3 border-b border-slate-300/15">
                   {[
                     ["Threat", "Severe"],
-                    ["Insertion", "North Gate"],
-                    ["Support", "Limited"],
+                    ["AO", sceneMeta(selectedScene).title],
+                    ["Support", selectedScene === "compound" ? "Extract" : "Limited"],
                   ].map(([label, value]) => (
                     <div key={label} className="border-r border-slate-300/10 px-3 py-3 last:border-r-0 sm:px-4">
                       <div className="text-[8px] uppercase tracking-[0.2em] text-slate-500">{label}</div>
@@ -4442,8 +6041,10 @@ export default function BradleysDarkSectorThreeJS() {
                     saveSettings(next);
                     if (gameRef.current) {
                       gameRef.current.settings = next;
-                      gameRef.current.camera.fov = next.fov;
-                      gameRef.current.camera.updateProjectionMatrix();
+                      if (!isXrPresenting(gameRef.current.renderer, gameRef.current.xr)) {
+                        gameRef.current.camera.fov = next.fov;
+                        gameRef.current.camera.updateProjectionMatrix();
+                      }
                     }
                   }}
                 />
@@ -4491,10 +6092,20 @@ export default function BradleysDarkSectorThreeJS() {
                     const state = gameRef.current;
                     if (state) {
                       state.settings = next;
+                      // Avoid DPR / shadow map thrash while an immersive session owns the framebuffer.
+                      if (state.xr?.presenting || state.renderer.xr.isPresenting) return;
                       const mobile = isTouchDevice();
                       const gfx = graphicsConfig(mobile ? "low" : next.graphics);
-                      state.renderer.setPixelRatio(Math.min(window.devicePixelRatio, mobile ? 1.25 : gfx.pixelRatioCap));
-                      state.renderer.shadowMap.enabled = !mobile && next.graphics !== "low";
+                      state.renderer.setPixelRatio(Math.min(window.devicePixelRatio, mobile ? 1.1 : gfx.pixelRatioCap));
+                      state.renderer.shadowMap.enabled = Boolean(gfx.enableShadows) && !mobile;
+                      state.renderer.shadowMap.type = THREE.BasicShadowMap;
+                      state.quality.setShadowsPreferred(Boolean(gfx.enableShadows) && !mobile);
+                      state.quality.setTier(
+                        mobile ? "mobile" : "desktop",
+                        mobile ? 1.1 : gfx.pixelRatioCap,
+                      );
+                      limitPointLights(state.scene, gfx.maxPointLights);
+                      setAtmosphereLowPower(state.atmosphere, mobile || next.graphics === "low");
                       if (state.scene.fog instanceof THREE.FogExp2) state.scene.fog.density = gfx.fogDensity;
                       state.scene.traverse((obj) => {
                         if (obj instanceof THREE.DirectionalLight && obj.castShadow) {
@@ -4614,27 +6225,62 @@ export default function BradleysDarkSectorThreeJS() {
 
       {gameOver ? (
         <div className="absolute inset-0 z-30 overflow-y-auto bg-[#070707]/90 backdrop-blur-[4px]">
-          <div className="pointer-events-none fixed inset-0 bg-[radial-gradient(circle_at_50%_20%,rgba(159,35,35,.2),transparent_38%),linear-gradient(135deg,rgba(4,7,6,.96),rgba(10,7,6,.86),rgba(2,3,3,.98))]" />
-          <div className="pointer-events-none fixed inset-x-0 top-0 h-1 bg-gradient-to-r from-transparent via-rose-500/70 to-transparent" />
+          <div
+            className={`pointer-events-none fixed inset-0 ${
+              missionOutcome === "extracted"
+                ? "bg-[radial-gradient(circle_at_50%_20%,rgba(52,211,153,.18),transparent_38%),linear-gradient(135deg,rgba(4,10,8,.96),rgba(6,10,8,.86),rgba(2,3,3,.98))]"
+                : "bg-[radial-gradient(circle_at_50%_20%,rgba(159,35,35,.2),transparent_38%),linear-gradient(135deg,rgba(4,7,6,.96),rgba(10,7,6,.86),rgba(2,3,3,.98))]"
+            }`}
+          />
+          <div
+            className={`pointer-events-none fixed inset-x-0 top-0 h-1 bg-gradient-to-r from-transparent to-transparent ${
+              missionOutcome === "extracted" ? "via-emerald-400/70" : "via-rose-500/70"
+            }`}
+          />
 
           <main className="relative mx-auto flex min-h-full w-full max-w-4xl items-center px-4 py-6 sm:px-8 sm:py-10">
             <section className="w-full border border-slate-200/15 bg-black/50 shadow-[0_30px_100px_rgba(0,0,0,.7)] backdrop-blur-md">
-              <div className="border-b border-rose-300/15 px-5 py-5 sm:px-8 sm:py-7">
+              <div className={`border-b px-5 py-5 sm:px-8 sm:py-7 ${missionOutcome === "extracted" ? "border-emerald-300/20" : "border-rose-300/15"}`}>
                 <div className="flex flex-wrap items-center justify-between gap-3">
-                  <div className="flex items-center gap-3 text-[9px] font-bold uppercase tracking-[0.28em] text-rose-300/80 sm:text-[10px]">
-                    <span className="h-2 w-2 bg-rose-500 shadow-[0_0_12px_rgba(244,63,94,.9)]" />
+                  <div
+                    className={`flex items-center gap-3 text-[9px] font-bold uppercase tracking-[0.28em] sm:text-[10px] ${
+                      missionOutcome === "extracted" ? "text-emerald-300/85" : "text-rose-300/80"
+                    }`}
+                  >
+                    <span
+                      className={`h-2 w-2 shadow-[0_0_12px_rgba(52,211,153,.9)] ${
+                        missionOutcome === "extracted" ? "bg-emerald-400" : "bg-rose-500 shadow-[0_0_12px_rgba(244,63,94,.9)]"
+                      }`}
+                    />
                     After-action report
                   </div>
-                  <div className="border border-rose-300/20 bg-rose-400/10 px-3 py-1 text-[8px] font-bold uppercase tracking-[0.22em] text-rose-200">
-                    Mission status · Failed
+                  <div
+                    className={`border px-3 py-1 text-[8px] font-bold uppercase tracking-[0.22em] ${
+                      missionOutcome === "extracted"
+                        ? "border-emerald-300/25 bg-emerald-400/10 text-emerald-100"
+                        : "border-rose-300/20 bg-rose-400/10 text-rose-200"
+                    }`}
+                  >
+                    {missionOutcome === "extracted" ? "Mission status · Extracted" : "Mission status · Failed"}
                   </div>
                 </div>
                 <h2 className="mt-5 text-[clamp(2.65rem,9vw,6.5rem)] font-black uppercase leading-[0.82] tracking-[-0.055em] text-slate-100">
-                  Compound
-                  <span className="block text-rose-400 [text-shadow:0_0_35px_rgba(251,113,133,.2)]">Overrun</span>
+                  {missionOutcome === "extracted" ? (
+                    <>
+                      Bird
+                      <span className="block text-emerald-400 [text-shadow:0_0_35px_rgba(52,211,153,.25)]">Outbound</span>
+                    </>
+                  ) : (
+                    <>
+                      Compound
+                      <span className="block text-rose-400 [text-shadow:0_0_35px_rgba(251,113,133,.2)]">Overrun</span>
+                    </>
+                  )}
                 </h2>
                 <p className="mt-4 max-w-2xl text-xs leading-relaxed text-slate-400 sm:text-sm">
-                  Defensive line collapsed under hostile pressure. Command has retained your combat telemetry for immediate redeployment.
+                  {missionOutcome === "extracted"
+                    ? "Helicopter extract secured. You held the LZ under fire, boarded the bird, and left the sector with a successful end-ex."
+                    : "Defensive line collapsed under hostile pressure. Command has retained your combat telemetry for immediate redeployment."}
                 </p>
               </div>
 
@@ -4654,16 +6300,28 @@ export default function BradleysDarkSectorThreeJS() {
 
               <div className="flex flex-col gap-4 border-t border-slate-200/15 px-5 py-5 sm:flex-row sm:items-center sm:justify-between sm:px-8 sm:py-6">
                 <div>
-                  <div className="text-[9px] font-bold uppercase tracking-[0.25em] text-cyan-200/70">Command recommendation</div>
-                  <p className="mt-1 text-xs text-slate-400">Reload early, preserve medkits, and isolate fast-moving scouts.</p>
+                  <div className={`text-[9px] font-bold uppercase tracking-[0.25em] ${missionOutcome === "extracted" ? "text-emerald-200/70" : "text-cyan-200/70"}`}>
+                    Command recommendation
+                  </div>
+                  <p className="mt-1 text-xs text-slate-400">
+                    {missionOutcome === "extracted"
+                      ? "Solid extract. Reload, re-arm, and stand by for the next compound insertion."
+                      : "Reload early, preserve medkits, and isolate fast-moving scouts."}
+                  </p>
                 </div>
                 <button
                   type="button"
                   onClick={startMission}
-                  className="group flex min-h-14 w-full items-center justify-between bg-cyan-100 px-5 text-left text-slate-950 transition hover:bg-white focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-cyan-200 sm:w-64"
+                  className={`group flex min-h-14 w-full items-center justify-between px-5 text-left text-slate-950 transition hover:bg-white focus-visible:outline-2 focus-visible:outline-offset-4 sm:w-64 ${
+                    missionOutcome === "extracted"
+                      ? "bg-emerald-200 focus-visible:outline-emerald-200"
+                      : "bg-cyan-100 focus-visible:outline-cyan-200"
+                  }`}
                 >
                   <span>
-                    <span className="block text-[8px] font-bold uppercase tracking-[0.22em] text-slate-600">Authorize redeployment</span>
+                    <span className="block text-[8px] font-bold uppercase tracking-[0.22em] text-slate-600">
+                      {missionOutcome === "extracted" ? "Authorize reinsertion" : "Authorize redeployment"}
+                    </span>
                     <span className="mt-0.5 block text-sm font-black uppercase tracking-[0.1em]">Restart mission</span>
                   </span>
                   <span aria-hidden="true" className="text-xl transition-transform group-hover:rotate-[-35deg]">↻</span>

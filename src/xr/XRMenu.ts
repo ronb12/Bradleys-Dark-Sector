@@ -127,12 +127,16 @@ export class XRMenu {
     this.hovered = null;
   }
 
-  /** Place menu in front of player. */
+  /**
+   * World-anchored panel ahead of the locomotion yaw (not head-locked).
+   * Yaw-only rotation keeps the plane upright so head pitch/roll never tilts UI.
+   */
   updatePose(playerPos: THREE.Vector3, yaw: number) {
+    const dist = 2.1;
     this.group.position.set(
-      playerPos.x - Math.sin(yaw) * 1.6,
-      playerPos.y + 1.45,
-      playerPos.z - Math.cos(yaw) * 1.6
+      playerPos.x - Math.sin(yaw) * dist,
+      playerPos.y + 1.55,
+      playerPos.z - Math.cos(yaw) * dist
     );
     this.group.rotation.set(0, yaw, 0);
   }

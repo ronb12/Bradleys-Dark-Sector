@@ -37,7 +37,7 @@ export function preloadEnemyWeapons(): Promise<void> {
       (gltf: GLTF) => {
         const model = gltf.scene.clone(true);
         model.traverse((child) => {
-          if (child instanceof THREE.Mesh) child.castShadow = true;
+          if (child instanceof THREE.Mesh) child.castShadow = false;
         });
         akTemplate = normalizeWeapon(model, 1.05);
         // Quaternius models the muzzle toward +X. Rotate +X onto soldier
@@ -104,27 +104,72 @@ function makeProceduralPistol() {
 
 export type EnemyWeaponKind = "ak47" | "pistol";
 
+function normalizeBoneToken(name: string) {
+  // Quaternius / Blender export as Wrist.R; Three may keep or strip the dot.
+  return name.replace(/[._\s:-]/g, "").toLowerCase();
+}
+
+function boneNameMatches(nodeName: string, exactSuffix: string) {
+  if (
+    nodeName === exactSuffix ||
+    nodeName === `mixamorig${exactSuffix}` ||
+    nodeName === `mixamorig:${exactSuffix}` ||
+    nodeName.endsWith(`:${exactSuffix}`) ||
+    nodeName.endsWith(`_${exactSuffix}`) ||
+    nodeName.endsWith(`.${exactSuffix}`) ||
+    nodeName.endsWith(exactSuffix)
+  ) {
+    return true;
+  }
+  const normalizedNode = normalizeBoneToken(nodeName);
+  const normalizedSuffix = normalizeBoneToken(exactSuffix);
+  return normalizedNode === normalizedSuffix || normalizedNode.endsWith(normalizedSuffix);
+}
+
 function findNamedBone(root: THREE.Object3D, exactSuffixes: string | string[]): THREE.Object3D | null {
   const suffixes = Array.isArray(exactSuffixes) ? exactSuffixes : [exactSuffixes];
+
+  // Prefer real skeleton bones from SkinnedMesh — parenting to a similarly named
+  // Object3D leaves the weapon floating at bind pose while the mesh animates.
+  const skeletonBones: THREE.Bone[] = [];
+  root.traverse((child) => {
+    if (child instanceof THREE.SkinnedMesh && child.skeleton?.bones?.length) {
+      for (const bone of child.skeleton.bones) skeletonBones.push(bone);
+    }
+  });
+  const pickFrom = (nodes: THREE.Object3D[]) => {
+    let found: THREE.Object3D | null = null;
+    for (const child of nodes) {
+      const n = child.name;
+      if (!n) continue;
+      if (/thumb|index|middle|ring|pinky/i.test(n)) continue;
+      const isExact = suffixes.some((exactSuffix) => boneNameMatches(n, exactSuffix));
+      if (!isExact) continue;
+      if (!found || n.length < found.name.length) found = child;
+    }
+    return found;
+  };
+
+  const fromSkeleton = pickFrom(skeletonBones);
+  if (fromSkeleton) return fromSkeleton;
+
   let found: THREE.Object3D | null = null;
   let fallback: THREE.Object3D | null = null;
   root.traverse((child) => {
     const n = child.name;
     if (!n) return;
-    // Finger bones include the hand suffix (RightHandThumb1) — skip those.
     if (/thumb|index|middle|ring|pinky/i.test(n)) return;
-    const isExact = suffixes.some(
-      (exactSuffix) =>
-        n === exactSuffix ||
-        n === `mixamorig${exactSuffix}` ||
-        n === `mixamorig:${exactSuffix}` ||
-        n.endsWith(`:${exactSuffix}`) ||
-        n.endsWith(`_${exactSuffix}`) ||
-        n.endsWith(exactSuffix)
-    );
+    const isExact = suffixes.some((exactSuffix) => boneNameMatches(n, exactSuffix));
     if (!isExact) return;
-    // Prefer the shortest exact name (RightHand over nested helpers).
-    if (!found || n.length < found.name.length) found = child;
+    // Prefer THREE.Bone over plain Object3D helpers with the same name.
+    const isBone = child instanceof THREE.Bone;
+    if (
+      !found
+      || (isBone && !(found instanceof THREE.Bone))
+      || ((isBone === (found instanceof THREE.Bone)) && n.length < found.name.length)
+    ) {
+      found = child;
+    }
     fallback = fallback || child;
   });
   return found || fallback;
@@ -141,6 +186,16 @@ function cancelRigScale(kit: THREE.Object3D, bone: THREE.Object3D, soldier: THRE
   );
 }
 
+/** Force the held weapon to a readable world length after bone parenting/scale cancel. */
+function fitHeldWeaponWorldSize(kit: THREE.Object3D, primary: THREE.Object3D, targetLongest: number) {
+  kit.updateMatrixWorld(true);
+  const box = new THREE.Box3().setFromObject(primary);
+  const size = box.getSize(new THREE.Vector3());
+  const longest = Math.max(size.x, size.y, size.z);
+  if (!Number.isFinite(longest) || longest < 0.001) return;
+  kit.scale.multiplyScalar(targetLongest / longest);
+}
+
 function addMuzzleMarker(primary: THREE.Object3D, kind: EnemyWeaponKind) {
   const muzzle = new THREE.Object3D();
   muzzle.name = "WeaponMuzzle";
@@ -151,10 +206,124 @@ function addMuzzleMarker(primary: THREE.Object3D, kind: EnemyWeaponKind) {
   return muzzle;
 }
 
+/**
+ * `normalizeWeapon` centers on the bbox midpoint, so the pistol grip is NOT at
+ * the origin — parenting that origin to the wrist makes the gun poke through the
+ * palm. Shift the visual so the grip sits at local (0,0,0).
+ *
+ * After rotation.y = PI/2: muzzle → -Z, stock → +Z, magazine / grip → -Y.
+ */
+function alignGripToOrigin(visual: THREE.Object3D, kind: EnemyWeaponKind) {
+  visual.position.set(0, 0, 0);
+  visual.updateMatrixWorld(true);
+  const box = new THREE.Box3().setFromObject(visual);
+  const size = box.getSize(new THREE.Vector3());
+  if (!Number.isFinite(size.x) || size.x < 1e-4) {
+    // Fallback if geometry isn't ready yet.
+    if (kind === "pistol") visual.position.set(0, 0.06, 0.02);
+    else visual.position.set(0, 0.11, -0.055);
+    return;
+  }
+
+  // Grip sits below the receiver and slightly toward the stock (+Z), not at the
+  // mag tip (absolute bottom) and not at the bbox center.
+  const gripY =
+    kind === "pistol"
+      ? box.min.y + size.y * 0.32
+      : box.min.y + size.y * 0.34;
+  const gripZ =
+    kind === "pistol"
+      ? box.min.z + size.z * 0.48
+      : box.min.z + size.z * 0.48;
+  const gripX = (box.min.x + box.max.x) * 0.5;
+  visual.position.set(-gripX, -gripY, -gripZ);
+}
+
+/** Mixamo RightHand local axes — grip in palm, muzzle roughly along fingers. */
+function posePrimaryOnHand(primary: THREE.Object3D, kind: EnemyWeaponKind) {
+  if (kind === "pistol") {
+    primary.position.set(0.02, 0.04, 0.06);
+    primary.rotation.set(-Math.PI * 0.5, Math.PI * 0.05, Math.PI * 0.08);
+  } else {
+    primary.position.set(0.04, 0.06, 0.12);
+    primary.rotation.set(-Math.PI * 0.52, 0.08, 0.12);
+  }
+}
+
+/**
+ * Quaternius WristR — fixed soldier-local aim while position tracks the bone.
+ * Barrel along local -Z after visual PI/2 yaw; slight pitch matches gun clips.
+ */
+function posePrimaryOnQuaterniusWrist(primary: THREE.Object3D, kind: EnemyWeaponKind) {
+  if (kind === "pistol") {
+    primary.rotation.set(-0.06, 0, 0.015);
+  } else {
+    primary.rotation.set(-0.05, 0, 0.02);
+  }
+}
+
+const _wristWorld = new THREE.Vector3();
+const _gripLocal = new THREE.Vector3();
+const _gripOffset = new THREE.Vector3();
+const _visualWorld = new THREE.Vector3();
+const _soldierInv = new THREE.Matrix4();
+const _wristInSoldier = new THREE.Vector3();
+const _visualInSoldier = new THREE.Vector3();
+
+/**
+ * Seat grip on WristR each frame without inheriting the bone's bind-pose twist
+ * (which previously drove the mesh through the palm). Position follows the
+ * animated wrist; rotation stays on the tuned soldier-local aim.
+ */
+export function syncEnemyWeaponGrip(soldier: THREE.Group) {
+  if (soldier.userData.weaponAttachmentMode !== "wrist-follow") return;
+  const primary = soldier.getObjectByName("EnemyPrimaryWeapon") as THREE.Object3D | null;
+  const boneName = soldier.userData.weaponHandBone as string | undefined;
+  if (!primary || !boneName) return;
+
+  const wrist = findNamedBone(soldier, boneName);
+  if (!wrist) return;
+
+  const fine = soldier.userData.weaponGripFineOffset as THREE.Vector3 | undefined;
+  if (fine) _gripOffset.copy(fine);
+  else _gripOffset.set(0, 0, 0);
+
+  // Calibrate once the gun-ready clip is playing — attach runs before playAnimation.
+  if (!soldier.userData.weaponGripCalibrated) {
+    const visual = soldier.getObjectByName("EnemyWeaponVisual");
+    if (visual) {
+      soldier.updateMatrixWorld(true);
+      wrist.getWorldPosition(_wristWorld);
+      visual.getWorldPosition(_visualWorld);
+      _soldierInv.copy(soldier.matrixWorld).invert();
+      _wristInSoldier.copy(_wristWorld).applyMatrix4(_soldierInv);
+      _visualInSoldier.copy(_visualWorld).applyMatrix4(_soldierInv);
+      _gripOffset.add(_wristInSoldier.sub(_visualInSoldier));
+      if (!soldier.userData.weaponGripFineOffset) {
+        soldier.userData.weaponGripFineOffset = _gripOffset.clone();
+      } else {
+        soldier.userData.weaponGripFineOffset.copy(_gripOffset);
+      }
+      soldier.userData.weaponGripCalibrated = true;
+      // Palm center sits slightly above the wrist bone — lift grip into the fist.
+      const weaponKind = soldier.userData.enemyWeapon as EnemyWeaponKind | undefined;
+      soldier.userData.weaponGripFineOffset.y += weaponKind === "pistol" ? 0.022 : 0.028;
+    }
+  }
+
+  wrist.getWorldPosition(_wristWorld);
+  soldier.updateMatrixWorld(true);
+  _gripLocal.copy(_wristWorld);
+  soldier.worldToLocal(_gripLocal);
+  primary.position.copy(_gripLocal).add(_gripOffset);
+}
+
 export function attachEnemyWeapon(soldier: THREE.Group, kind: EnemyWeaponKind = "ak47") {
   try {
     const existing = soldier.getObjectByName("EnemyWeaponKit");
     if (existing) existing.parent?.remove(existing);
+    const existingHolster = soldier.getObjectByName("EnemyHolster");
+    if (existingHolster) existingHolster.parent?.remove(existingHolster);
 
     const kit = new THREE.Group();
     kit.name = "EnemyWeaponKit";
@@ -174,40 +343,54 @@ export function attachEnemyWeapon(soldier: THREE.Group, kind: EnemyWeaponKind = 
     primary.add(weaponVisual);
 
     const isRigged = soldier.userData.modelType === "mixamo-glb" || soldier.userData.modelType === "fbx-mixamo";
-    const rightHand = isRigged ? findNamedBone(soldier, ["RightHand", "HandR", "WristR"]) : null;
+    // Prefer distal hand bones over wrist so the grip sits in the fingers/palm.
+    const rightHand = isRigged
+      ? findNamedBone(soldier, ["HandR", "RightHand", "handr", "WristR", "RightWrist"])
+      : null;
 
     if (rightHand) {
-      const isQuaterniusRig = /wrist.?r/i.test(rightHand.name);
+      const boneToken = normalizeBoneToken(rightHand.name);
+      // Quaternius exports Wrist.R; Mixamo uses mixamorigRightHand — different local axes.
+      const isQuaterniusRig = /wristr$/.test(boneToken) || (/handr$/.test(boneToken) && !/righthand|mixamo/.test(boneToken));
+
       if (isQuaterniusRig) {
-        // WristR carries animation-space rotations that turn separately loaded
-        // props vertical/backward. Keep the firearm on a stable soldier-local
-        // presentation mount: local -Z remains the muzzle direction while the
-        // authored gun animations place both hands around this chest position.
-        if (kind === "pistol") {
-          primary.position.set(0.2, 1.34, -0.27);
-          primary.rotation.set(-0.04, 0, 0.02);
-        } else {
-          primary.position.set(0.16, 1.3, -0.34);
-          primary.rotation.set(-0.04, 0, 0.02);
-        }
+        // Parenting directly to WristR inherited bind-pose twist and spiked the
+        // barrel through the palm. Track wrist world position each frame but
+        // keep a stable soldier-local aim aligned with idle_gun / run_shoot clips.
+        alignGripToOrigin(weaponVisual, kind);
+        if (kind === "pistol") weaponVisual.scale.multiplyScalar(1.05);
+        posePrimaryOnQuaterniusWrist(primary, kind);
         kit.add(primary);
         soldier.add(kit);
+        soldier.updateMatrixWorld(true);
+        const wristLocal = new THREE.Vector3();
+        rightHand.getWorldPosition(wristLocal);
+        soldier.worldToLocal(wristLocal);
+        // Nudge grip into palm (bone sits at wrist joint, not palm center).
+        soldier.userData.weaponGripFineOffset = new THREE.Vector3(
+          kind === "pistol" ? 0.008 : 0.006,
+          kind === "pistol" ? -0.012 : -0.016,
+          kind === "pistol" ? 0.018 : 0.024
+        );
+        primary.position.copy(wristLocal).add(soldier.userData.weaponGripFineOffset);
+        fitHeldWeaponWorldSize(kit, primary, kind === "pistol" ? 0.32 : 1.05);
+        soldier.userData.weaponGripCalibrated = false;
         soldier.userData.weaponBoneAttached = false;
-        soldier.userData.weaponAttachmentMode = "chest-presentation";
+        soldier.userData.weaponAttachmentMode = "wrist-follow";
+        soldier.userData.weaponHandBone = rightHand.name;
+        soldier.userData.weaponBoneIsSkeleton = rightHand instanceof THREE.Bone;
       } else {
-        if (kind === "pistol") {
-          primary.position.set(0.02, 0.04, 0.06);
-          primary.rotation.set(-Math.PI * 0.5, Math.PI * 0.05, Math.PI * 0.08);
-          weaponVisual.scale.multiplyScalar(1.05);
-        } else {
-          primary.position.set(0.04, 0.06, 0.12);
-          primary.rotation.set(-Math.PI * 0.52, 0.08, 0.12);
-        }
+        alignGripToOrigin(weaponVisual, kind);
+        if (kind === "pistol") weaponVisual.scale.multiplyScalar(1.05);
+        posePrimaryOnHand(primary, kind);
         rightHand.add(kit);
         cancelRigScale(kit, rightHand, soldier);
         kit.add(primary);
+        fitHeldWeaponWorldSize(kit, primary, kind === "pistol" ? 0.32 : 1.05);
         soldier.userData.weaponBoneAttached = true;
         soldier.userData.weaponAttachmentMode = "hand";
+        soldier.userData.weaponHandBone = rightHand.name;
+        soldier.userData.weaponBoneIsSkeleton = rightHand instanceof THREE.Bone;
       }
     } else if (isRigged) {
       primary.position.set(0.28, 1.15, -0.35);
@@ -219,6 +402,7 @@ export function attachEnemyWeapon(soldier: THREE.Group, kind: EnemyWeaponKind = 
       kit.add(primary);
       soldier.add(kit);
       soldier.userData.weaponBoneAttached = false;
+      soldier.userData.weaponAttachmentMode = "chest-fallback";
     } else {
       const limbs = soldier.userData.limbs;
       if (limbs?.rifle) limbs.rifle.visible = false;
@@ -227,6 +411,7 @@ export function attachEnemyWeapon(soldier: THREE.Group, kind: EnemyWeaponKind = 
       kit.add(primary);
       soldier.add(kit);
       soldier.userData.weaponBoneAttached = false;
+      soldier.userData.weaponAttachmentMode = "procedural";
     }
 
     const muzzle = addMuzzleMarker(primary, kind);

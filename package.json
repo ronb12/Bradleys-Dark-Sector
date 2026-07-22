@@ -12,7 +12,10 @@
     "dev:pvp": "node server/pvp-server.mjs",
     "start": "node server/pvp-server.mjs",
     "typecheck": "tsc -b",
-    "check": "npm run lint && npm run build"
+    "check": "npm run lint && npm run build",
+    "quest:build": "./scripts/quest-build.sh",
+    "quest:install": "./scripts/quest-install.sh",
+    "heli:glb": "/usr/local/bin/blender -b -P scripts/generate-uh60-glb.py"
   },
   "dependencies": {
     "react": "^19.2.7",

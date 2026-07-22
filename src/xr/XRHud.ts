@@ -37,13 +37,15 @@ export class XRHud {
       side: THREE.DoubleSide,
     });
     this.panel = new THREE.Mesh(new THREE.PlaneGeometry(0.42, 0.21), mat);
-    this.panel.position.set(0.18, 0.08, -0.05);
-    this.panel.rotation.set(-0.55, 0.35, 0.1);
+    // Slight local tilt for readability; group itself stays yaw-only / world-upright.
+    this.panel.position.set(0, 0, 0);
+    this.panel.rotation.set(-0.2, 0.15, 0);
     this.group.add(this.panel);
     this.group.visible = false;
     scene.add(this.group);
     this.draw({
       health: 100,
+      maxHealth: 100,
       ammo: 30,
       weapon: "M4A1",
       score: 0,
@@ -57,6 +59,8 @@ export class XRHud {
       rangeChallengeActive: false,
       rangeChallengeTime: 0,
       subtitle: "",
+      medkits: 2,
+      grenades: 3,
     });
   }
 
@@ -64,12 +68,14 @@ export class XRHud {
     this.group.visible = visible;
   }
 
-  /** Place HUD near left wrist / body-left of player. */
+  /** Place HUD comfortably left-front; avoid near-eye stereo divergence. */
   updatePose(playerPos: THREE.Vector3, yaw: number) {
+    const forward = 0.95;
+    const left = 0.55;
     this.group.position.set(
-      playerPos.x + Math.sin(yaw - 0.85) * 0.45,
-      playerPos.y + 1.15,
-      playerPos.z - Math.cos(yaw - 0.85) * 0.45
+      playerPos.x - Math.sin(yaw) * forward + Math.sin(yaw - Math.PI / 2) * left,
+      playerPos.y + 1.35,
+      playerPos.z - Math.cos(yaw) * forward + Math.cos(yaw - Math.PI / 2) * left
     );
     this.group.rotation.set(0, yaw, 0);
   }
@@ -94,14 +100,19 @@ export class XRHud {
     ctx.font = "bold 22px monospace";
     ctx.fillText("BRADLEY · DARK SECTOR · VR", 28, 42);
 
-    const hpColor = s.health <= 30 ? "#f87171" : s.health <= 55 ? "#fbbf24" : "#86efac";
+    const hpPct = Math.round((Math.max(0, s.health) / Math.max(1, s.maxHealth)) * 100);
+    const hpColor = hpPct <= 30 ? "#f87171" : hpPct <= 55 ? "#fbbf24" : "#86efac";
     ctx.fillStyle = hpColor;
     ctx.font = "bold 48px monospace";
-    ctx.fillText(`HP ${Math.max(0, Math.round(s.health))}`, 28, 110);
+    ctx.fillText(`HP ${hpPct}`, 28, 110);
 
     ctx.fillStyle = "#e2e8f0";
     ctx.font = "bold 40px monospace";
     ctx.fillText(`${s.weapon}  ${s.ammo}`, 28, 170);
+
+    ctx.fillStyle = "#cbd5e1";
+    ctx.font = "bold 22px monospace";
+    ctx.fillText(`MED ×${s.medkits}  FRAG ×${s.grenades}`, 28, 205);
 
     ctx.fillStyle = "#67e8f9";
     ctx.font = "bold 26px monospace";
@@ -111,30 +122,30 @@ export class XRHud {
           ? `QUAL ${s.rangeChallengeTime.toFixed(1)}s · ACC ${s.rangeAccuracy}%`
           : `RANGE · HITS ${s.rangeHits} · ACC ${s.rangeAccuracy}%`,
         28,
-        220
+        245
       );
     } else {
-      ctx.fillText(`WAVE ${s.wave} · SCORE ${s.score}`, 28, 220);
+      ctx.fillText(`WAVE ${s.wave} · SCORE ${s.score}`, 28, 245);
     }
 
     ctx.fillStyle = "#cbd5e1";
     ctx.font = "22px sans-serif";
     const obj = (s.missionTitle ? `${s.missionTitle}: ` : "") + (s.objective || "");
-    ctx.fillText(obj.slice(0, 54), 28, 265);
+    ctx.fillText(obj.slice(0, 54), 28, 290);
 
     if (s.contact) {
       ctx.fillStyle = "#fca5a5";
       ctx.font = "bold 28px monospace";
-      ctx.fillText(`CONTACT ${s.contact}`, 28, 315);
+      ctx.fillText(`CONTACT ${s.contact}`, 28, 335);
     } else if (s.subtitle) {
       ctx.fillStyle = "#fde68a";
       ctx.font = "22px sans-serif";
-      ctx.fillText(s.subtitle.slice(0, 60), 28, 315);
+      ctx.fillText(s.subtitle.slice(0, 60), 28, 335);
     }
 
     ctx.fillStyle = "#64748b";
     ctx.font = "18px monospace";
-    ctx.fillText("LT stick move · RT snap · R trigger fire · Y menu", 28, 360);
+    ctx.fillText("LT move · RT snap · R fire · X reload · L medkit · Y menu", 28, 360);
 
     this.texture.needsUpdate = true;
   }

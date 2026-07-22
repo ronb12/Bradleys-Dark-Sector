@@ -17,6 +17,9 @@ export default defineConfig({
     port: 4173,
   },
   build: {
+    // three.js is already isolated in its own chunk below and cannot be split
+    // further — raise the warning ceiling above its ~700 kB minified size.
+    chunkSizeWarningLimit: 800,
     rollupOptions: {
       output: {
         manualChunks(id) {

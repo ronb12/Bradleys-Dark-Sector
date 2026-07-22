@@ -6,6 +6,16 @@ export type RadioPoolId =
   | "waveInbound"
   | "objectiveComplete"
   | "missionBrief"
+  | "extractInbound"
+  | "extractHold"
+  | "extractBoard"
+  | "extractSuccess"
+  | "commanderBrief"
+  | "commanderBanter"
+  | "commanderExtract"
+  | "pilotInbound"
+  | "pilotBoard"
+  | "pilotAck"
   | "rangeOnline"
   | "rangeChallengeStart"
   | "rangePass"
@@ -15,7 +25,11 @@ export type RadioPoolId =
   | "enemyCallout"
   | "contact"
   | "killConfirm"
-  | "reloadRemind";
+  | "reloadRemind"
+  | "battlefieldChaos"
+  | "qrfInbound"
+  | "contactDirection"
+  | "vehicleBoom";
 
 const lastPicked = new Map<RadioPoolId, string>();
 
@@ -52,14 +66,132 @@ export const MISSION_AMBIENT_LINES = [
   "Actual to Bradley — keep your lanes hot and your head down.",
   "Comms check: compound still contested. Hold until extract window.",
   "Scout bird reports heat signatures near the fuel tanks. Priority threat.",
+  "Bradley, outer cordon is lit up — secondary explosions all around the AO.",
+  "Command — sporadic indirect fire east of your position. Stay off the skyline.",
+  "Net traffic heavy. Multiple gun runs audible beyond the fence line.",
+  "Actual, QRF stack is spinning but you're still the sharp end. Keep pushing.",
+  "Bradley, tracers everywhere — treat the whole compound as hot.",
+] as const;
+
+export const QRF_INBOUND_LINES = [
+  "QRF sirens active — hostile quick-reaction force inbound on your sector!",
+  "Command to Bradley: QRF column moving. Expect a fresh push any second.",
+  "Net warning — enemy QRF stacking south. Brace for contact.",
+  "Actual, QRF is rolling. They're not waiting — neither should you.",
+  "Bradley, QRF inbound. Hold your lane and punish the rush.",
+] as const;
+
+export const CONTACT_DIRECTION_LINES = [
+  "Contact left!",
+  "Contact right!",
+  "Contact north — shift fire!",
+  "Contact south — they're coming through!",
+  "Hostiles breaking west!",
+  "Movement east — eyes up!",
+  "Contact close on your flank!",
+  "Taking fire from the left treeline!",
+  "Right side — engage!",
+  "Contact! Multiple shooters!",
+] as const;
+
+export const VEHICLE_BOOM_LINES = [
+  "Vehicle hit — big secondary out beyond the wall!",
+  "Command copies detonation — armored column taking hits outside the wire.",
+  "Bradley, distant vehicle brew-up — keep your head down.",
+  "Net call: transport column struck. Debris inbound on the wind.",
+  "Actual — heavy boom east. That's not on you, but the AO is fully lit.",
+] as const;
+
+export const BATTLEFIELD_CHAOS_LINES = [
+  "Indirect thump — brace for secondary!",
+  "Arty splash distant — stay in cover!",
+  "Bradley, whole AO is hot. Treat every lane as live.",
+  "Command — continuous small-arms across the perimeter.",
+  "Flare up — they're marking the yard!",
+] as const;
+
+export const EXTRACT_INBOUND_LINES = [
+  "Actual — extract bird inbound. Reach the amber LZ and hold for boarding.",
+  "Command to Bradley: helicopter extract is live. Move to the helipad and hold the ring.",
+  "Net call: bird is spinning up. Get on the LZ and hold until she is on station.",
+  "Bradley, extract authorized. Reach the helipad, hold under fire, then board.",
+] as const;
+
+export const EXTRACT_HOLD_LINES = [
+  "Hold the LZ — leaving the ring pauses extract. Keep that pad clear.",
+  "Actual: maintain the hold. Bird is closing. Do not break the LZ.",
+  "Stay inside the amber ring. Hold progress pauses if you leave.",
+  "Command copies hold in progress. Suppress hostiles and stay on the pad.",
+] as const;
+
+export const EXTRACT_BOARD_LINES = [
+  "Bird is on station. Board the helicopter — extract ends the mission.",
+  "Actual: skids down. Get aboard now. Extract is a successful end-ex.",
+  "Helicopter ready. Enter the LZ and board. You are leaving the sector.",
+  "Command: board the bird. Run complete on extract.",
+] as const;
+
+export const EXTRACT_SUCCESS_LINES = [
+  "Extract complete. Bradley is outbound. Solid work.",
+  "Command confirms extract success. Bird is clear of the compound.",
+  "Net close — helicopter extract secured. Mission complete.",
+  "Actual: Bradley extracted. After-action starts when you are on the ground.",
+] as const;
+
+/** Allied commander — initial briefing / welcome at FOB HQ. */
+export const COMMANDER_BRIEF_LINES = [
+  "Bradley, this is Actual at the TOC. Push south, clear the yard, and report when you need extract.",
+  "Command to Bradley — you are green from the north gate. Hold the compound and conserve ammo.",
+  "Actual copies. Intel says scattered militia in the warehouses. I will call the bird when you are ready.",
+  "Bradley, welcome to the FOB. Secure the AO and check back when you need tasking or extract.",
+] as const;
+
+/** Allied commander — repeat banter on manual talk. */
+export const COMMANDER_BANTER_LINES = [
+  "Still holding the line, Bradley. Extract window opens when you clear the yard.",
+  "QRF is stacked but you are still the only boots on ground. Keep me posted.",
+  "Overwatch has eyes on the helipad. Do not give up the LZ when the bird comes.",
+  "Copy, Bradley. Conserve grenades — hostiles stack on the flanks after wave three.",
+  "Actual here. Reload early and watch the warehouse alleys.",
+] as const;
+
+/** Allied commander — extract-related guidance. */
+export const COMMANDER_EXTRACT_LINES = [
+  "Extract is authorized. Reach the amber LZ and hold — I will keep hostiles off your six.",
+  "Bird is inbound on my mark. Get to the helipad and do not break the hold ring.",
+  "Command copies extract. Hold the pad under fire — the pilot will not land on a cold LZ.",
+] as const;
+
+/** Allied pilot — inbound / approach chatter. */
+export const PILOT_INBOUND_LINES = [
+  "Dustoff One inbound your LZ. ETA two mikes — keep that pad clear.",
+  "Bradley, Dustoff One. I have your amber ring on scope. Stay inside the hold.",
+  "Pilot to ground — spinning up final. Smoke or tracers if you need me on the deck fast.",
+  "Dustoff One on approach. I see the helipad — hold what you have got.",
+] as const;
+
+/** Allied pilot — on-station / board prompts. */
+export const PILOT_BOARD_LINES = [
+  "Skids down, Bradley. Board aft cabin — we lift when you are aboard.",
+  "Dustoff One on station. Move to the bird now — rotor wash is hot.",
+  "Pilot copies board call. Climb aboard — we are wheels up on your mark.",
+  "LZ is cold enough. Get on the helicopter — I cannot hold all day.",
+] as const;
+
+/** Allied pilot — acknowledges player boarding / extract success. */
+export const PILOT_ACK_LINES = [
+  "Passenger aboard. Dustoff One is outbound — good work down there.",
+  "Bradley is on the bird. Climbing out — Actual, Bradley extracted.",
+  "Copy all aboard. Route home is clear. Hang on.",
+  "Lift-off. You earned this ride, Bradley.",
 ] as const;
 
 export const MISSION_START_LINES = [
-  "Bravo Actual to Bradley. Breach the north gate, secure the yard, and hold for extraction.",
+  "Bravo Actual to Bradley. Breach the north gate, secure the yard, and hold until extract is authorized.",
   "Command to Bradley — you are green light. Enter the compound and establish fire superiority.",
   "Bradley, this is Actual. Push through the gate, clear the yard, standby for follow-on orders.",
   "Net call: Bradley is boots down. Secure the AO and prepare for wave contact.",
-  "Actual — mission is live. Breach, clear, and hold the compound until extract.",
+  "Actual — mission is live. Breach, clear, and hold the compound until the extract bird is called.",
 ] as const;
 
 export const WAVE_INBOUND_TEMPLATES = [
@@ -184,6 +316,16 @@ export const RADIO_POOL_SIZES = {
   waveInbound: WAVE_INBOUND_TEMPLATES.length,
   objectiveComplete: OBJECTIVE_COMPLETE_TEMPLATES.length,
   missionBrief: MISSION_BRIEF_TEMPLATES.length,
+  extractInbound: EXTRACT_INBOUND_LINES.length,
+  extractHold: EXTRACT_HOLD_LINES.length,
+  extractBoard: EXTRACT_BOARD_LINES.length,
+  extractSuccess: EXTRACT_SUCCESS_LINES.length,
+  commanderBrief: COMMANDER_BRIEF_LINES.length,
+  commanderBanter: COMMANDER_BANTER_LINES.length,
+  commanderExtract: COMMANDER_EXTRACT_LINES.length,
+  pilotInbound: PILOT_INBOUND_LINES.length,
+  pilotBoard: PILOT_BOARD_LINES.length,
+  pilotAck: PILOT_ACK_LINES.length,
   rangeOnline: RANGE_ONLINE_LINES.length,
   rangeChallengeStart: RANGE_CHALLENGE_START_LINES.length,
   rangePass: RANGE_PASS_TEMPLATES.length,
@@ -194,6 +336,10 @@ export const RADIO_POOL_SIZES = {
   contact: CONTACT_LINES.length,
   killConfirm: KILL_CONFIRM_LINES.length,
   reloadRemind: RELOAD_REMIND_LINES.length,
+  battlefieldChaos: BATTLEFIELD_CHAOS_LINES.length,
+  qrfInbound: QRF_INBOUND_LINES.length,
+  contactDirection: CONTACT_DIRECTION_LINES.length,
+  vehicleBoom: VEHICLE_BOOM_LINES.length,
 } as const;
 
 export function missionAmbientLine(): string {
@@ -217,6 +363,46 @@ export function objectiveCompleteLine(title: string): string {
 export function missionBriefLine(title: string, briefing: string): string {
   const tpl = pickFromPool("missionBrief", MISSION_BRIEF_TEMPLATES);
   return tpl.replaceAll("{title}", title).replaceAll("{briefing}", briefing);
+}
+
+export function extractInboundLine(): string {
+  return pickFromPool("extractInbound", EXTRACT_INBOUND_LINES);
+}
+
+export function extractHoldLine(): string {
+  return pickFromPool("extractHold", EXTRACT_HOLD_LINES);
+}
+
+export function extractBoardLine(): string {
+  return pickFromPool("extractBoard", EXTRACT_BOARD_LINES);
+}
+
+export function extractSuccessLine(): string {
+  return pickFromPool("extractSuccess", EXTRACT_SUCCESS_LINES);
+}
+
+export function commanderBriefLine(): string {
+  return pickFromPool("commanderBrief", COMMANDER_BRIEF_LINES);
+}
+
+export function commanderBanterLine(): string {
+  return pickFromPool("commanderBanter", COMMANDER_BANTER_LINES);
+}
+
+export function commanderExtractLine(): string {
+  return pickFromPool("commanderExtract", COMMANDER_EXTRACT_LINES);
+}
+
+export function pilotInboundLine(): string {
+  return pickFromPool("pilotInbound", PILOT_INBOUND_LINES);
+}
+
+export function pilotBoardLine(): string {
+  return pickFromPool("pilotBoard", PILOT_BOARD_LINES);
+}
+
+export function pilotAckLine(): string {
+  return pickFromPool("pilotAck", PILOT_ACK_LINES);
 }
 
 export function rangeOnlineLine(): string {
@@ -261,6 +447,22 @@ export function killConfirmLine(): string {
 
 export function reloadRemindLine(): string {
   return pickFromPool("reloadRemind", RELOAD_REMIND_LINES);
+}
+
+export function battlefieldChaosLine(): string {
+  return pickFromPool("battlefieldChaos", BATTLEFIELD_CHAOS_LINES);
+}
+
+export function qrfInboundLine(): string {
+  return pickFromPool("qrfInbound", QRF_INBOUND_LINES);
+}
+
+export function contactDirectionLine(): string {
+  return pickFromPool("contactDirection", CONTACT_DIRECTION_LINES);
+}
+
+export function vehicleBoomLine(): string {
+  return pickFromPool("vehicleBoom", VEHICLE_BOOM_LINES);
 }
 
 /** Assert every pool has variety; returns failing pool ids (empty if all good). */

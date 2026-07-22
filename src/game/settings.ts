@@ -35,7 +35,7 @@ export type GameSettings = {
   comfortVignette: boolean;
 };
 
-const STORAGE_KEY = "bds-settings-v1";
+const STORAGE_KEY = "bds-settings-v2";
 
 export const DEFAULT_SETTINGS: GameSettings = {
   mouseSensitivity: 1,
@@ -44,7 +44,7 @@ export const DEFAULT_SETTINGS: GameSettings = {
   sfxVolume: 1,
   radioVolume: 0.85,
   musicVolume: 0.4,
-  graphics: "high",
+  graphics: "medium",
   subtitles: true,
   reduceMotion: false,
   invertY: false,
@@ -94,15 +94,50 @@ export function saveSettings(settings: GameSettings) {
 export function graphicsConfig(preset: GraphicsPreset) {
   switch (preset) {
     case "low":
-      return { shadowMapSize: 512, pixelRatioCap: 1, fogDensity: 0.012, particles: 0.35, volumetricFog: false };
+      return {
+        shadowMapSize: 512,
+        pixelRatioCap: 1,
+        fogDensity: 0.013,
+        particles: 0.2,
+        volumetricFog: false,
+        maxPointLights: 2,
+        enableShadows: false,
+      };
     case "medium":
-      return { shadowMapSize: 1024, pixelRatioCap: 1.5, fogDensity: 0.0095, particles: 0.7, volumetricFog: true };
+      return {
+        shadowMapSize: 512,
+        pixelRatioCap: 1.15,
+        fogDensity: 0.011,
+        particles: 0.3,
+        volumetricFog: false,
+        maxPointLights: 4,
+        enableShadows: false,
+      };
     default:
-      return { shadowMapSize: 2048, pixelRatioCap: 2, fogDensity: 0.0085, particles: 1, volumetricFog: true };
+      return {
+        shadowMapSize: 512,
+        pixelRatioCap: 1.25,
+        fogDensity: 0.01,
+        particles: 0.4,
+        volumetricFog: false,
+        maxPointLights: 6,
+        enableShadows: false,
+      };
   }
 }
 
 /** Quest-friendly preset while an immersive-vr session is presenting. */
 export function xrGraphicsConfig() {
-  return { shadowMapSize: 512, pixelRatioCap: 1.25, fogDensity: 0.012, particles: 0.3, volumetricFog: false };
+  return {
+    shadowMapSize: 512,
+    /** Desktop canvas DPR while presenting — keep ≤1 to avoid resize thrash. */
+    pixelRatioCap: 1,
+    /** WebXR layer resolution scale (1 = native; lower = more stable FPS). */
+    framebufferScale: 0.7,
+    fogDensity: 0.012,
+    particles: 0.3,
+    volumetricFog: false,
+    maxPointLights: 4,
+    enableShadows: false,
+  };
 }

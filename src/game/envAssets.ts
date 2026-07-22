@@ -8,7 +8,6 @@ const ENV_MODEL_URLS = {
   jerrycan: "/models/env/metal_jerrycan_green.glb",
   compressor: "/models/env/old_military_compressor.glb",
   barrel: "/models/env/barrel_03.glb",
-  rollerDoor: "/models/env/rollershutter_door.glb",
 } as const;
 
 type EnvAssetKey = keyof typeof ENV_MODEL_URLS;
@@ -32,14 +31,21 @@ function loadTemplates() {
 function makeGroundedClone(
   template: THREE.Object3D,
   targetLongestSide: number,
-  name: string
+  name: string,
+  castShadows = true,
 ) {
   const model = template.clone(true);
   model.traverse((child) => {
     child.userData.sharedEnvAsset = true;
     if (child instanceof THREE.Mesh) {
-      child.castShadow = true;
+      // Small props still receive shadows; casting is the expensive part on Quest.
+      child.castShadow = castShadows && targetLongestSide >= 1.2;
       child.receiveShadow = true;
+      // Avoid double-sided imported materials when possible (cheaper fill).
+      const mat = child.material;
+      if (mat && !Array.isArray(mat) && "side" in mat && mat.side === THREE.DoubleSide) {
+        mat.side = THREE.FrontSide;
+      }
     }
   });
 
@@ -70,9 +76,10 @@ function addAsset(
   x: number,
   z: number,
   rotationY = 0,
-  collider = true
+  collider = true,
+  castShadows = true,
 ) {
-  const root = makeGroundedClone(templates[key], targetLongestSide, `ImportedEnv:${key}`);
+  const root = makeGroundedClone(templates[key], targetLongestSide, `ImportedEnv:${key}`, castShadows);
   root.position.set(x, 0, z);
   root.rotation.y = rotationY;
   parent.add(root);
@@ -185,23 +192,9 @@ export async function populateCompoundWithEnvironmentAssets(
     addAsset(root, colliders, templates, "jerrycan", 0.58, x, z, index * 0.6)
   );
 
-  // Facades match expanded warehouse / hangar footprints.
-  const facadeDoors: Array<[number, number, number]> = [
-    [-48, -24.28, 0],
-    [48, -23.28, 0],
-    [-48, 24.72, 0],
-    [48, 24.22, 0],
-    [0, -54.28, 0],
-    [-48, 2.72, 0],
-    [48, 2.72, 0],
-  ];
-  facadeDoors.forEach(([x, z, rotation]) =>
-    addAsset(root, colliders, templates, "rollerDoor", 4.4, x, z, rotation, false)
-  );
-
   root.userData.loadedAssetUrls = Object.values(ENV_MODEL_URLS);
   root.userData.importedInstanceCount =
-    barriers.length + crates.length + ammoBoxes.length + 4 + 8 + 6 + facadeDoors.length;
+    barriers.length + crates.length + ammoBoxes.length + 4 + 8 + 6;
   return root;
 }
 

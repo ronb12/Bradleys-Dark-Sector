@@ -14,6 +14,7 @@ export type AnimStateName =
   | "reload"
   | "crouch"
   | "crouchWalk"
+  | "kneel"
   | "switch";
 
 const CLIP_ALIASES: Record<AnimStateName, string[]> = {
@@ -27,6 +28,7 @@ const CLIP_ALIASES: Record<AnimStateName, string[]> = {
   reload: ["reload", "reloading"],
   crouch: ["crouch", "crouching idle", "crouch idle"],
   crouchWalk: ["crouch walk", "sneak", "crouched walk"],
+  kneel: ["kneel", "kneeling", "kneel aim", "kneeling aim", "rifle kneel", "kneelidle"],
   switch: ["draw", "holster", "equip"],
 };
 
@@ -318,10 +320,29 @@ export function synthesizeCombatClips(sourceClips: THREE.AnimationClip[]): THREE
         ...(rArm ? { [rArm]: [{ t: 0, x: -0.95, y: 0.1, z: 0.2 }, { t: 1.4, x: -0.95, y: 0.1, z: 0.2 }] } : {}),
       },
     },
+    {
+      // Asymmetric kneel-fire: front foot planted, rear knee down, torso upright enough to aim.
+      name: "KneelAim",
+      duration: 1.5,
+      loop: true,
+      poses: {
+        ...(hips ? { [hips]: [{ t: 0, x: 0.32, y: 0.04, z: 0 }, { t: 1.5, x: 0.32, y: 0.04, z: 0 }] } : {}),
+        ...(lUp ? { [lUp]: [{ t: 0, x: 0.95, y: 0.08, z: -0.06 }, { t: 1.5, x: 0.95, y: 0.08, z: -0.06 }] } : {}),
+        ...(rUp ? { [rUp]: [{ t: 0, x: 1.45, y: -0.12, z: 0.1 }, { t: 1.5, x: 1.45, y: -0.12, z: 0.1 }] } : {}),
+        ...(lLeg ? { [lLeg]: [{ t: 0, x: -1.05, y: 0, z: 0 }, { t: 1.5, x: -1.05, y: 0, z: 0 }] } : {}),
+        ...(rLeg ? { [rLeg]: [{ t: 0, x: -1.65, y: 0.05, z: 0 }, { t: 1.5, x: -1.65, y: 0.05, z: 0 }] } : {}),
+        ...(spine2 ? { [spine2]: [{ t: 0, x: 0.14, y: 0, z: 0 }, { t: 1.5, x: 0.14, y: 0, z: 0 }] } : {}),
+        ...(rArm ? { [rArm]: [{ t: 0, x: -1.05, y: 0.15, z: 0.25 }, { t: 1.5, x: -1.05, y: 0.15, z: 0.25 }] } : {}),
+        ...(rFore ? { [rFore]: [{ t: 0, x: 0.35, y: 0, z: 0.1 }, { t: 1.5, x: 0.35, y: 0, z: 0.1 }] } : {}),
+        ...(lArm ? { [lArm]: [{ t: 0, x: -0.85, y: -0.35, z: -0.2 }, { t: 1.5, x: -0.85, y: -0.35, z: -0.2 }] } : {}),
+        ...(lFore ? { [lFore]: [{ t: 0, x: 0.55, y: 0.1, z: 0 }, { t: 1.5, x: 0.55, y: 0.1, z: 0 }] } : {}),
+      },
+    },
   ];
 
   const stateForRecipe = (name: string): AnimStateName => {
     if (name === "CrouchIdle") return "crouch";
+    if (name === "KneelAim") return "kneel";
     if (name === "Shoot") return "fire";
     return name.toLowerCase() as AnimStateName;
   };

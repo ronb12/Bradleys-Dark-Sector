@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { spawnDestructionBurst } from "./atmosphere";
+import { spawnDestructionBurst, type AtmosphereState } from "./atmosphere";
 
 export type DamageableProp = {
   mesh: THREE.Mesh;
@@ -14,9 +14,14 @@ export class DestructionSystem {
   readonly props: DamageableProp[] = [];
   private scene: THREE.Scene;
   private colliders: THREE.Box3[];
+  atmosphere: AtmosphereState | null = null;
 
   constructor(scene: THREE.Scene, colliders: THREE.Box3[]) {
     this.scene = scene;
+    this.colliders = colliders;
+  }
+
+  setColliders(colliders: THREE.Box3[]) {
     this.colliders = colliders;
   }
 
@@ -46,6 +51,6 @@ export class DestructionSystem {
       if (index >= 0) this.colliders.splice(index, 1);
     }
     const p = prop.mesh.getWorldPosition(new THREE.Vector3());
-    spawnDestructionBurst(this.scene, p.x, p.z);
+    spawnDestructionBurst(this.scene, p.x, p.z, this.atmosphere ?? undefined);
   }
 }

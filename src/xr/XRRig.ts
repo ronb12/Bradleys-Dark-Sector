@@ -19,8 +19,12 @@ export class XRRig {
 
   enterSession(camera: THREE.PerspectiveCamera) {
     if (this.attached) return;
+    // Dolly pattern: headset pose is applied in local space under this group.
+    // Never write camera.position/rotation again while presenting — WebXRManager owns it.
     this.root.add(camera);
     camera.position.set(0, 0, 0);
+    camera.scale.set(1, 1, 1);
+    camera.quaternion.identity();
     camera.rotation.set(0, 0, 0);
     this.attached = true;
   }
@@ -35,11 +39,19 @@ export class XRRig {
   syncFromPlayer(position: THREE.Vector3, yaw: number) {
     this.root.position.set(position.x, position.y, position.z);
     this.root.rotation.set(0, yaw, 0);
+    this.root.updateMatrixWorld(true);
   }
 
   /** Apply snap turn around vertical axis (radians). */
   snapTurn(deltaYaw: number) {
     this.root.rotation.y += deltaYaw;
+    this.root.updateMatrixWorld(true);
+  }
+
+  /** Stick locomotion / mode start — floor origin only (headset supplies eye height). */
+  setFloorPosition(x: number, y: number, z: number) {
+    this.root.position.set(x, y, z);
+    this.root.updateMatrixWorld(true);
   }
 
   getYaw() {

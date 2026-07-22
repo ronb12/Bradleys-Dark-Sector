@@ -99,13 +99,16 @@ export function assignSquads(enemies: THREE.Group[], maxSquad = 4): Squad[] {
       m.userData.squadId = nextSquadId;
       m.userData.aiRole = roles[idx % roles.length];
       m.userData.coverTarget = null as CoverPoint | null;
+      m.userData.coverArrivedAt = 0;
+      m.userData.coverLockUntil = 0;
+      m.userData.repositionUntil = 0;
       m.userData.retreatUntil = 0;
       m.userData.grenadeReactUntil = 0;
       m.userData.suppression = 0;
       m.userData.magazine = m.userData.enemyType === "Heavy" ? 40 : 24;
       m.userData.magazineSize = m.userData.magazine;
       m.userData.reloadUntil = 0;
-      m.userData.nextGrenadeAt = performance.now() / 1000 + 5 + Math.random() * 8;
+      m.userData.nextGrenadeAt = performance.now() / 1000 + 70 + Math.random() * 50;
       m.userData.peekSide = idx % 2 === 0 ? 1 : -1;
       m.userData.peekUntil = 0;
       m.userData.pushBias = 0;
@@ -127,11 +130,22 @@ function nearestCover(
   covers: CoverPoint[],
   preferredDistance: number,
   minimumDistance: number,
-  preferAway = false
+  preferAway = false,
+  options?: {
+    exclude?: CoverPoint | null;
+    preferCloser?: boolean;
+    preferFlank?: number;
+  }
 ): CoverPoint | null {
   let best: CoverPoint | null = null;
   let bestScore = -Infinity;
+  const exclude = options?.exclude ?? null;
+  const preferCloser = Boolean(options?.preferCloser);
+  const preferFlank = options?.preferFlank ?? 0;
+  const fromPlayerDist = Math.hypot(from.x - player.x, from.z - player.z);
   for (const c of covers) {
+    if (exclude && c === exclude) continue;
+    if (exclude && Math.hypot(c.x - exclude.x, c.z - exclude.z) < 2.2) continue;
     const toPlayer = Math.hypot(c.x - player.x, c.z - player.z);
     const toSelf = Math.hypot(c.x - from.x, c.z - from.z);
     if (toSelf < 0.55) continue;
@@ -142,6 +156,22 @@ function nearestCover(
     let score = c.quality * 2.2 - toSelf * 0.85;
     if (preferAway) score += toPlayer * 0.15;
     else score += Math.max(0, 12 - Math.abs(toPlayer - preferredDistance));
+    // Advance: bias toward fighting positions that close distance without rushing melee.
+    if (preferCloser && toPlayer + 0.6 < fromPlayerDist && toPlayer >= preferredDistance - 1.5) {
+      score += 4.2;
+    }
+    if (preferFlank !== 0) {
+      const towardX = player.x - from.x;
+      const towardZ = player.z - from.z;
+      const flankX = -towardZ * preferFlank;
+      const flankZ = towardX * preferFlank;
+      const toCoverX = c.x - from.x;
+      const toCoverZ = c.z - from.z;
+      const flankAlign =
+        (toCoverX * flankX + toCoverZ * flankZ)
+        / ((Math.hypot(toCoverX, toCoverZ) + 0.001) * (Math.hypot(flankX, flankZ) + 0.001));
+      score += flankAlign * 3.4;
+    }
     // Prefer cover that sits between enemy and player (occluder feel).
     const ax = from.x - player.x;
     const az = from.z - player.z;
@@ -157,6 +187,15 @@ function nearestCover(
     }
   }
   return best;
+}
+
+function coverDwellSeconds(role: AiRole, push: number): number {
+  const base =
+    role === "assault" ? 1.65
+    : role === "flanker" ? 1.15
+    : role === "suppressor" ? 2.55
+    : 2.15;
+  return Math.max(0.55, base - push * 1.05);
 }
 
 export function signalGrenadeThreat(enemies: THREE.Group[], gx: number, gz: number, radius = 10) {
@@ -181,12 +220,12 @@ export function updateSquadCoordination(squads: Squad[], ctx: AiContext) {
       squad.members.reduce((s, m) => s + m.position.distanceTo(ctx.player), 0) / Math.max(1, squad.members.length);
 
     // Coordinated pressure changes firing tempo, but does not abandon hard cover.
-    if (ctx.now > squad.pushUntil && healthy >= 2 && avgDist < 22 && wounded === 0) {
-      squad.pushUntil = ctx.now + 6 + Math.random() * 4;
+    if (ctx.now > squad.pushUntil && healthy >= 2 && avgDist < 26 && wounded === 0) {
+      squad.pushUntil = ctx.now + 4.5 + Math.random() * 3.5;
       squad.focusX = ctx.player.x;
       squad.focusZ = ctx.player.z;
       for (const m of squad.members) {
-        m.userData.pushBias = 1.4;
+        m.userData.pushBias = 1.65;
         // Keep cover targets — push through lanes, don't dump everyone into the open.
       }
     }
@@ -222,6 +261,7 @@ export function computeEnemySteer(enemy: THREE.Group, ctx: AiContext): AiSteerRe
   const hasLos = ctx.hasLos(enemy.position, ctx.player);
   const tacticalOffset = enemy.userData.tacticalOffset ?? Math.random() * 5.4;
   enemy.userData.tacticalOffset = tacticalOffset;
+  const push = enemy.userData.pushBias || 0;
 
   let retreating = false;
   let wantCover = false;
@@ -242,16 +282,78 @@ export function computeEnemySteer(enemy: THREE.Group, ctx: AiContext): AiSteerRe
     wantCover = true;
   }
 
-  if (!enemy.userData.coverTarget || now >= (enemy.userData.coverLockUntil || 0)) {
-    const cover = nearestCover(enemy.position, ctx.player, ctx.coverPoints, preferred, minimum, retreating);
+  // Finite cover dwell — never refresh lock forever while planted (that froze
+  // spawn-at-cover soldiers in place for the whole fight).
+  const currentCover = enemy.userData.coverTarget as CoverPoint | null;
+  const atCurrentCover = Boolean(
+    currentCover
+    && Math.hypot(currentCover.x - enemy.position.x, currentCover.z - enemy.position.z) <= 1.75
+  );
+  if (atCurrentCover) {
+    if (!enemy.userData.coverArrivedAt) enemy.userData.coverArrivedAt = now;
+  } else {
+    enemy.userData.coverArrivedAt = 0;
+  }
+  const dwellExpired =
+    atCurrentCover
+    && (now - (enemy.userData.coverArrivedAt || now)) >= coverDwellSeconds(role, push);
+  const forceAdvance =
+    !retreating
+    && !suppressed
+    && (
+      dwellExpired
+      || push > 0.85
+      || (role === "assault" && distance > preferred + 2.5 && atCurrentCover)
+      || (role === "flanker" && atCurrentCover && now >= (enemy.userData.repositionUntil || 0))
+    );
+
+  if (forceAdvance) {
+    const next = nearestCover(
+      enemy.position,
+      ctx.player,
+      ctx.coverPoints,
+      preferred,
+      minimum,
+      false,
+      {
+        exclude: currentCover,
+        preferCloser: distance > preferred - 0.5 || push > 0.5,
+        preferFlank: role === "flanker" || role === "assault" ? flankSign : 0,
+      }
+    );
+    if (next) {
+      enemy.userData.coverTarget = next;
+      enemy.userData.coverLockUntil = now + 3.2 + Math.random() * 2.2;
+      enemy.userData.coverArrivedAt = 0;
+      enemy.userData.repositionUntil = now + 2.4 + Math.random() * 1.6;
+    } else if (dwellExpired || push > 0.85) {
+      // No alternate prop — clear lock so open-field flank/strafe can resume.
+      enemy.userData.coverTarget = null;
+      enemy.userData.coverLockUntil = 0;
+      enemy.userData.coverArrivedAt = 0;
+      enemy.userData.repositionUntil = now + 1.8 + Math.random();
+    }
+  } else if (!enemy.userData.coverTarget || now >= (enemy.userData.coverLockUntil || 0)) {
+    const cover = nearestCover(
+      enemy.position,
+      ctx.player,
+      ctx.coverPoints,
+      preferred,
+      minimum,
+      retreating,
+      {
+        preferCloser: !retreating && distance > preferred + 1,
+        preferFlank: role === "flanker" ? flankSign : 0,
+      }
+    );
     if (cover) {
       enemy.userData.coverTarget = cover;
-      enemy.userData.coverLockUntil = now + 4 + Math.random() * 3;
+      enemy.userData.coverLockUntil = now + 3.5 + Math.random() * 2.5;
+      enemy.userData.coverArrivedAt = 0;
     }
   }
 
   const cover = enemy.userData.coverTarget as CoverPoint | null;
-  const push = enemy.userData.pushBias || 0;
   const steer = new THREE.Vector3();
   let intent: AiSteerResult["intent"] = "hold";
 
@@ -273,92 +375,71 @@ export function computeEnemySteer(enemy: THREE.Group, ctx: AiContext): AiSteerRe
       && coverPlayerDistance >= minimum
       && coverPlayerDistance <= weaponRange + 2
     );
-    // Once a soldier reaches its assigned fighting position, plant there.
-    // This guard must run before the far-distance advance branch; previously an
-    // enemy at cover but outside preferred range immediately rushed the player.
+    // Once a soldier reaches its assigned fighting position, work that prop
+    // briefly (peek/hold), then relocate — never plant for the whole fight.
     const atCover = Boolean(cover && coverDistance <= 1.75);
 
     if (distance < minimum) {
       // Hard separation guard: ranged soldiers backpedal instead of crowding.
       intent = "retreat";
       steer.copy(toward).multiplyScalar(-1).addScaledVector(flankDir, 0.3);
+    } else if (usefulCover && !atCover) {
+      // Moving to the next fighting position takes priority over open holds.
+      intent = "cover";
+      wantCover = true;
+      steer.set(cover!.x - enemy.position.x, 0, cover!.z - enemy.position.z);
     } else if (atCover) {
       if (now >= (enemy.userData.peekUntil || 0)) {
         enemy.userData.peekSide *= -1;
-        enemy.userData.peekUntil = now + 0.7 + Math.random() * 1.1;
+        enemy.userData.peekUntil = now + 0.55 + Math.random() * 0.85;
       }
-      const peeking = (enemy.userData.suppression || 0) < 0.42 && now < enemy.userData.peekUntil - 0.28;
+      const peeking = (enemy.userData.suppression || 0) < 0.42 && now < enemy.userData.peekUntil - 0.18;
       if (peeking) {
         intent = "strafe";
         const tx = enemy.userData.peekSide > 0 ? cover!.peekRightX : cover!.peekLeftX;
         const tz = enemy.userData.peekSide > 0 ? cover!.peekRightZ : cover!.peekLeftZ;
         steer.set(tx - enemy.position.x, 0, tz - enemy.position.z);
+      } else if (role === "flanker" || push > 0.4) {
+        // Keep feet moving between peeks so squads don't freeze on sandbags.
+        intent = "strafe";
+        steer.copy(flankDir).multiplyScalar(0.65);
       } else {
         intent = "hold";
         steer.set(0, 0, 0);
       }
       wantCover = true;
-      // Keep the position long enough to make cover use readable. A later
-      // suppression/grenade/wounded state can still force relocation.
-      enemy.userData.coverLockUntil = Math.max(
-        enemy.userData.coverLockUntil || 0,
-        now + 1.25
-      );
     } else if (!hasLos) {
-      // Reposition to another fighting position; never run straight at the
-      // player simply because LOS is blocked.
-      if (usefulCover && !atCover) {
-        intent = "cover";
-        wantCover = true;
-        steer.set(cover!.x - enemy.position.x, 0, cover!.z - enemy.position.z);
-      } else {
-        intent = "strafe";
-        steer.copy(flankDir);
-      }
-    } else if (usefulCover && !atCover && distance <= farThreshold + 2) {
-      // With LOS, still move into nearby cover before holding in the open.
-      intent = "cover";
-      wantCover = true;
-      steer.set(cover!.x - enemy.position.x, 0, cover!.z - enemy.position.z);
+      // Reposition laterally when LOS is blocked and no useful cover path exists.
+      intent = "strafe";
+      steer.copy(flankDir).addScaledVector(toward, role === "assault" ? 0.35 : 0.15);
     } else if (distance > farThreshold - Math.min(push, 0.75)) {
-      // Move cover-to-cover from long range. If no useful cover is available,
-      // flank laterally rather than charging down the player's sightline.
-      if (usefulCover && !atCover) {
-        intent = "cover";
-        wantCover = true;
-        steer.set(cover!.x - enemy.position.x, 0, cover!.z - enemy.position.z);
-      } else {
-        intent = "strafe";
-        steer.copy(flankDir).multiplyScalar(role === "flanker" ? 1 : 0.45);
-      }
+      // Long range: flank/advance rather than freeze in the open.
+      intent = push > 0.5 || role === "assault" ? "advance" : "strafe";
+      steer
+        .copy(flankDir)
+        .multiplyScalar(role === "flanker" ? 1 : 0.55)
+        .addScaledVector(toward, role === "assault" || push > 0.5 ? 0.55 : 0.2);
     } else if (distance < preferred - 1) {
       intent = "retreat";
       steer.copy(toward).multiplyScalar(-0.75).addScaledVector(flankDir, 0.35);
-      if (usefulCover && !atCover) {
-        intent = "cover";
-        wantCover = true;
-        steer.set(cover!.x - enemy.position.x, 0, cover!.z - enemy.position.z);
-      }
     } else {
-      // Commit to readable hold/strafe/peek beats instead of changing intent
-      // every frame. Offset keeps squad members from moving in lockstep.
+      // Preferred band: mostly strafe/advance beats; hold is brief and rare.
       if (now >= (enemy.userData.intentUntil || 0)) {
         const roll = Math.abs(Math.sin(now * 0.73 + tacticalOffset));
-        if (usefulCover && !atCover) {
-          enemy.userData.aiIntent = "cover";
-        } else if ((role === "support" || role === "suppressor") && atCover && roll > 0.55) {
+        if ((role === "support" || role === "suppressor") && roll > 0.72) {
           enemy.userData.aiIntent = "hold";
+        } else if (role === "assault" && roll > 0.45) {
+          enemy.userData.aiIntent = "advance";
         } else {
-          enemy.userData.aiIntent = roll > 0.5 ? "strafe" : "hold";
+          enemy.userData.aiIntent = "strafe";
         }
-        enemy.userData.intentUntil = now + 1.15 + roll * 1.35;
+        enemy.userData.intentUntil = now + 0.85 + roll * 0.95;
       }
-      intent = enemy.userData.aiIntent || "hold";
-      if (intent === "cover" && usefulCover && !atCover) {
-        wantCover = true;
-        steer.set(cover!.x - enemy.position.x, 0, cover!.z - enemy.position.z);
+      intent = enemy.userData.aiIntent || "strafe";
+      if (intent === "advance") {
+        steer.copy(toward).multiplyScalar(0.4).addScaledVector(flankDir, 0.75);
       } else if (intent === "strafe") {
-        steer.copy(flankDir);
+        steer.copy(flankDir).addScaledVector(toward, 0.12);
       } else {
         intent = "hold";
       }
@@ -367,13 +448,19 @@ export function computeEnemySteer(enemy: THREE.Group, ctx: AiContext): AiSteerRe
 
   if (steer.lengthSq() >= 0.0001) steer.normalize();
 
-  // Speed modifiers
+  // Speed modifiers — keep relocation snappy; plants happen in the movement loop.
   let speedMul = 1;
-  if (retreating) speedMul = 1.25;
-  else if (intent === "retreat") speedMul = 1.6;
-  if (suppressed) speedMul = 1.35;
-  if (role === "support") speedMul *= 0.9;
-  if (push > 0.8) speedMul *= 1.15;
+  if (retreating) speedMul = 1.35;
+  else if (intent === "retreat") speedMul = 1.7;
+  else if (intent === "advance") speedMul = 1.35;
+  else if (intent === "cover") speedMul = 1.25;
+  else if (intent === "strafe") speedMul = 1.08;
+  if (suppressed) speedMul = Math.max(speedMul, 1.4);
+  if (role === "support") speedMul *= 0.92;
+  if (role === "flanker" && (intent === "advance" || intent === "strafe" || intent === "cover")) {
+    speedMul *= 1.08;
+  }
+  if (push > 0.8) speedMul *= 1.18;
   enemy.userData.aiSpeedMul = speedMul;
   enemy.userData.aiIntent = intent;
 
@@ -385,6 +472,83 @@ export function enemyShouldHoldFire(enemy: THREE.Group): boolean {
   return now < (enemy.userData.grenadeReactUntil || 0)
     || now < (enemy.userData.reloadUntil || 0)
     || (enemy.userData.suppression || 0) > 0.72;
+}
+
+/**
+ * Kneel-and-shoot stance: brief plant while firing / cover-hold beats.
+ * Cleared before relocate/advance/flank so hostiles stand before sprinting.
+ */
+export function updateEnemyKneelStance(
+  enemy: THREE.Group,
+  opts: {
+    now: number;
+    dt: number;
+    distance: number;
+    fireHolding: boolean;
+    relocating: boolean;
+    intent: AiSteerResult["intent"];
+    wantCover: boolean;
+    fireHoldUntil: number;
+  },
+): { kneeling: boolean; kneelBlend: number; planted: boolean } {
+  const role = (enemy.userData.aiRole as AiRole) || "assault";
+  // Stand when relocating (or suppressed) — blend-out still plants feet briefly.
+  const mustStand =
+    opts.relocating
+    || opts.intent === "advance"
+    || opts.intent === "retreat"
+    || (opts.intent === "cover" && !opts.fireHolding)
+    || (enemy.userData.suppression || 0) > 0.62
+    || opts.now < (enemy.userData.grenadeReactUntil || 0);
+
+  if (mustStand) {
+    enemy.userData.kneelUntil = 0;
+  } else if (
+    opts.now >= (enemy.userData.kneelUntil || 0)
+    && opts.distance >= 6.2
+    && opts.distance <= 15.5
+  ) {
+    const midRange = opts.distance >= 7 && opts.distance <= 13.5;
+    const coverHold = opts.wantCover && opts.intent === "hold";
+    const canEnter = opts.fireHolding || coverHold;
+    const roll = Math.abs(Math.sin(opts.now * 1.17 + (enemy.userData.tacticalOffset || 0)));
+    if (canEnter && midRange && (coverHold || opts.fireHolding)) {
+      // Suppressors/supports kneel most fire-holds; assault sometimes; flankers rarely.
+      const takeKneel =
+        coverHold
+        || role === "suppressor"
+        || role === "support"
+        || (role === "assault" && roll < 0.58)
+        || (role === "flanker" && roll < 0.28);
+      if (takeKneel) {
+        const holdEnd = opts.fireHolding
+          ? Math.max(opts.fireHoldUntil, opts.now + 0.55)
+          : opts.now + 0.7 + Math.random() * 0.3;
+        enemy.userData.kneelUntil = holdEnd;
+        // Nudge plant window enough to read the kneel without freezing relocates.
+        enemy.userData.fireHoldUntil = Math.max(
+          enemy.userData.fireHoldUntil || 0,
+          Math.min(holdEnd, opts.now + 0.5),
+        );
+      }
+    }
+  } else if (opts.fireHolding && opts.now < (enemy.userData.kneelUntil || 0)) {
+    // Keep kneel aligned with the active fire-hold window.
+    enemy.userData.kneelUntil = Math.max(enemy.userData.kneelUntil || 0, opts.fireHoldUntil);
+  }
+
+  const kneeling = opts.now < (enemy.userData.kneelUntil || 0);
+  const kneelBlend = THREE.MathUtils.damp(
+    enemy.userData.kneelBlend || 0,
+    kneeling ? 1 : 0,
+    kneeling ? 11 : 9,
+    opts.dt,
+  );
+  enemy.userData.kneelBlend = kneelBlend;
+  enemy.userData.kneeling = kneeling;
+  // Plant while kneeling or still rising — prevents moonwalk on the blend-out.
+  const planted = kneeling || kneelBlend > 0.35;
+  return { kneeling, kneelBlend, planted };
 }
 
 export function suppressEnemiesNearShot(

@@ -30,10 +30,10 @@ export const DIFFICULTY: Record<
   DifficultyId,
   { label: string; enemyHpMul: number; enemyDmgMul: number; enemyCountMul: number; playerHpMul: number; xpMul: number }
 > = {
-  recruit: { label: "Recruit", enemyHpMul: 0.75, enemyDmgMul: 0.7, enemyCountMul: 0.8, playerHpMul: 1.25, xpMul: 0.7 },
-  operator: { label: "Operator", enemyHpMul: 1, enemyDmgMul: 1, enemyCountMul: 1, playerHpMul: 1, xpMul: 1 },
-  veteran: { label: "Veteran", enemyHpMul: 1.25, enemyDmgMul: 1.35, enemyCountMul: 1.15, playerHpMul: 0.9, xpMul: 1.35 },
-  nightmare: { label: "Nightmare", enemyHpMul: 1.55, enemyDmgMul: 1.7, enemyCountMul: 1.35, playerHpMul: 0.75, xpMul: 1.8 },
+  recruit: { label: "Recruit", enemyHpMul: 0.75, enemyDmgMul: 0.48, enemyCountMul: 0.8, playerHpMul: 1.3, xpMul: 0.7 },
+  operator: { label: "Operator", enemyHpMul: 1, enemyDmgMul: 0.64, enemyCountMul: 1, playerHpMul: 1.22, xpMul: 1 },
+  veteran: { label: "Veteran", enemyHpMul: 1.25, enemyDmgMul: 0.92, enemyCountMul: 1.15, playerHpMul: 1.05, xpMul: 1.35 },
+  nightmare: { label: "Nightmare", enemyHpMul: 1.55, enemyDmgMul: 1.18, enemyCountMul: 1.35, playerHpMul: 0.88, xpMul: 1.8 },
 };
 
 export const ATTACHMENTS: Record<

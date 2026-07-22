@@ -550,7 +550,6 @@ export function addCombatCoverToCompound(
     [44, -6, 0],
     [-44, 18, 0],
     [44, 18, 0],
-    [0, -52, 0, 5.4, 2.4, 2.35],
     [-52, 40, Math.PI / 2],
     [52, 40, -Math.PI / 2],
   ];
@@ -588,4 +587,363 @@ export function addCombatCoverToCompound(
   add(makeFuelTank(textures), -18, 0, -18);
   add(makeFuelTank(textures), 18, 0, -18);
   add(makeAntennaMast(textures), -50, 0, -48);
+}
+
+/** NATO-style helipad H + approach ring — keep center clear for extract bird. */
+export function makeHelipadMarking(lzRadius: number) {
+  const group = new THREE.Group();
+  group.name = "HelipadLZ";
+  const white = new THREE.MeshStandardMaterial({ color: 0xe8e4d8, roughness: 0.82, metalness: 0.04 });
+  const yellow = new THREE.MeshBasicMaterial({ color: 0xd1b45c, side: THREE.DoubleSide });
+  const dimYellow = new THREE.MeshStandardMaterial({ color: 0xb89840, roughness: 0.88, metalness: 0.05 });
+
+  const pad = new THREE.Mesh(new THREE.CircleGeometry(lzRadius + 1.2, 48), dimYellow);
+  pad.rotation.x = -Math.PI / 2;
+  pad.position.y = 0.032;
+  pad.receiveShadow = true;
+  group.add(pad);
+
+  const outerRing = new THREE.Mesh(
+    new THREE.RingGeometry(lzRadius + 0.35, lzRadius + 0.95, 48),
+    yellow,
+  );
+  outerRing.rotation.x = -Math.PI / 2;
+  outerRing.position.y = 0.042;
+  group.add(outerRing);
+
+  const innerRing = new THREE.Mesh(
+    new THREE.RingGeometry(lzRadius - 0.95, lzRadius - 0.35, 48),
+    yellow,
+  );
+  innerRing.rotation.x = -Math.PI / 2;
+  innerRing.position.y = 0.043;
+  group.add(innerRing);
+
+  const barW = lzRadius * 0.22;
+  const barH = lzRadius * 0.78;
+  const crossbar = new THREE.Mesh(new THREE.BoxGeometry(barW, 0.04, barH * 0.42), white);
+  crossbar.position.set(0, 0.05, 0);
+  group.add(crossbar);
+  for (const side of [-1, 1]) {
+    const leg = new THREE.Mesh(new THREE.BoxGeometry(barW, 0.04, barH * 0.52), white);
+    leg.position.set(side * barW * 0.95, 0.05, barH * 0.22);
+    group.add(leg);
+  }
+
+  for (let i = 0; i < 4; i += 1) {
+    const angle = (i / 4) * Math.PI * 2 + Math.PI / 4;
+    const tick = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.03, 1.4), white);
+    tick.position.set(Math.sin(angle) * (lzRadius - 0.15), 0.048, Math.cos(angle) * (lzRadius - 0.15));
+    tick.rotation.y = -angle;
+    group.add(tick);
+  }
+  return group;
+}
+
+export function makeConcertinaWire(length = 8, coils = 14) {
+  const group = new THREE.Group();
+  const wireMat = new THREE.MeshStandardMaterial({ color: 0x6a6e64, roughness: 0.35, metalness: 0.72 });
+  const postMat = new THREE.MeshStandardMaterial({ color: 0x4a4e48, roughness: 0.55, metalness: 0.55 });
+  for (const x of [-length / 2, length / 2]) {
+    const post = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.07, 1.15, 6), postMat);
+    post.position.set(x, 0.58, 0);
+    group.add(post);
+  }
+  for (let i = 0; i < coils; i += 1) {
+    const t = i / Math.max(1, coils - 1);
+    const coil = new THREE.Mesh(new THREE.TorusGeometry(0.22, 0.028, 6, 12), wireMat);
+    coil.position.set(-length / 2 + t * length, 0.72 + Math.sin(i * 0.9) * 0.04, 0);
+    coil.rotation.y = Math.PI / 2;
+    coil.rotation.x = 0.15 + (i % 2) * 0.08;
+    group.add(coil);
+  }
+  group.userData.surfaceKind = "metal";
+  return group;
+}
+
+export function makeHescoWallLine(textures: EnvTextures, count = 4, spacing = 1.55) {
+  const group = new THREE.Group();
+  for (let i = 0; i < count; i += 1) {
+    const unit = makeHescoBarrier(textures);
+    unit.position.set((i - (count - 1) / 2) * spacing, 0, 0);
+    unit.rotation.y = (i % 2) * 0.04;
+    group.add(unit);
+  }
+  group.userData.coverHeight = 1.4;
+  return group;
+}
+
+export function makeAmmoBunker(textures: EnvTextures) {
+  const concrete = matFromTex(textures.concrete, 0.94, 0.03, 0x8a8478);
+  const group = new THREE.Group();
+  const body = new THREE.Mesh(new THREE.BoxGeometry(4.2, 1.35, 2.8), concrete);
+  body.position.y = 0.68;
+  body.castShadow = true;
+  group.add(body);
+  const roof = new THREE.Mesh(new THREE.BoxGeometry(4.5, 0.22, 3.1), matFromTex(textures.corrugated, 0.75, 0.35, 0x3a4038));
+  roof.position.y = 1.42;
+  roof.castShadow = true;
+  group.add(roof);
+  const door = new THREE.Mesh(new THREE.BoxGeometry(1.2, 1.05, 0.12), matFromTex(textures.metal, 0.55, 0.5, 0x3a4038));
+  door.position.set(0, 0.62, -1.46);
+  group.add(door);
+  const stencil = new THREE.Mesh(
+    new THREE.BoxGeometry(1.4, 0.22, 0.04),
+    new THREE.MeshStandardMaterial({ color: 0xd4a017, roughness: 0.65, metalness: 0.1 }),
+  );
+  stencil.position.set(-1.1, 1.05, -1.42);
+  group.add(stencil);
+  group.userData.coverHeight = 1.35;
+  return group;
+}
+
+export function makeVehicleHardstand(textures: EnvTextures, width = 10, depth = 7) {
+  const group = new THREE.Group();
+  const asphalt = matFromTex(cloneMap(textures.asphalt, 4, 3), 0.96, 0.02, 0x3a3a38);
+  const pad = new THREE.Mesh(new THREE.PlaneGeometry(width, depth), asphalt);
+  pad.rotation.x = -Math.PI / 2;
+  pad.position.y = 0.038;
+  pad.receiveShadow = true;
+  group.add(pad);
+  const chalkMat = new THREE.MeshBasicMaterial({
+    color: 0xc8c0a8,
+    transparent: true,
+    opacity: 0.35,
+    side: THREE.DoubleSide,
+  });
+  const border = new THREE.Mesh(new THREE.PlaneGeometry(width - 0.4, depth - 0.4), chalkMat);
+  border.rotation.x = -Math.PI / 2;
+  border.position.y = 0.041;
+  group.add(border);
+  for (let i = -1; i <= 1; i += 2) {
+    const line = new THREE.Mesh(new THREE.PlaneGeometry(0.12, depth - 1.2), chalkMat);
+    line.rotation.x = -Math.PI / 2;
+    line.position.set(i * (width * 0.28), 0.042, 0);
+    group.add(line);
+  }
+  return group;
+}
+
+export function makeFloodlightMast(textures: EnvTextures, mobile = false) {
+  const metal = matFromTex(textures.metal, 0.48, 0.62, 0x5a5e58);
+  const group = new THREE.Group();
+  const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.13, 7.2, 10), metal);
+  pole.position.y = 3.6;
+  pole.castShadow = !mobile;
+  group.add(pole);
+  const arm = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.12, 0.12), metal);
+  arm.position.set(0.65, 6.8, 0);
+  group.add(arm);
+  const lampHousing = new THREE.Mesh(new THREE.BoxGeometry(0.85, 0.35, 0.55), metal);
+  lampHousing.position.set(1.45, 6.65, 0);
+  group.add(lampHousing);
+  const lens = new THREE.Mesh(
+    new THREE.BoxGeometry(0.72, 0.28, 0.08),
+    new THREE.MeshStandardMaterial({
+      color: 0xf0f8ff,
+      emissive: 0xb8d8f0,
+      emissiveIntensity: mobile ? 1.1 : 1.6,
+      roughness: 0.25,
+      metalness: 0.08,
+    }),
+  );
+  lens.position.set(1.45, 6.62, 0.28);
+  group.add(lens);
+  if (!mobile) {
+    const spot = new THREE.SpotLight(0xe8f4ff, 22, 68, Math.PI / 5.8, 0.42, 0.95);
+    spot.position.set(1.45, 6.5, 0);
+    spot.target.position.set(1.45, 0, 8);
+    group.add(spot);
+    group.add(spot.target);
+    group.userData.spot = spot;
+  }
+  return group;
+}
+
+export function makeCamoNetDrape(width = 8, depth = 6) {
+  const group = new THREE.Group();
+  const netMat = new THREE.MeshStandardMaterial({
+    color: 0x4a5a3a,
+    roughness: 0.95,
+    metalness: 0.02,
+    transparent: true,
+    opacity: 0.72,
+    side: THREE.DoubleSide,
+  });
+  const segments = 6;
+  for (let i = 0; i < segments; i += 1) {
+    const t = i / (segments - 1);
+    const panel = new THREE.Mesh(new THREE.PlaneGeometry(width / segments + 0.2, depth * 0.55), netMat);
+    panel.position.set(-width / 2 + t * width, 0.35 - Math.sin(t * Math.PI) * 0.25, depth * 0.08);
+    panel.rotation.x = -0.35 - Math.sin(t * Math.PI) * 0.15;
+    panel.rotation.y = (t - 0.5) * 0.12;
+    group.add(panel);
+  }
+  for (let i = 0; i < 8; i += 1) {
+    const tie = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.015, 0.015, 0.6, 4),
+      new THREE.MeshStandardMaterial({ color: 0x3a4038, roughness: 0.8, metalness: 0.1 }),
+    );
+    tie.position.set(-width / 2 + (i / 7) * width, 0.55, -depth * 0.05);
+    tie.rotation.z = 0.4;
+    group.add(tie);
+  }
+  return group;
+}
+
+export function makeFuelBladder(textures: EnvTextures) {
+  const rubber = matFromTex(textures.paint, 0.88, 0.08, 0x3a4038);
+  const group = new THREE.Group();
+  const bladder = new THREE.Mesh(new THREE.BoxGeometry(2.8, 0.75, 1.8), rubber);
+  bladder.position.y = 0.42;
+  bladder.castShadow = true;
+  group.add(bladder);
+  const cradle = new THREE.Mesh(new THREE.BoxGeometry(3.1, 0.18, 2.1), matFromTex(textures.wood, 0.9, 0.05, 0x6a5a40));
+  cradle.position.y = 0.12;
+  group.add(cradle);
+  const hazard = new THREE.Mesh(
+    new THREE.BoxGeometry(0.7, 0.18, 0.04),
+    new THREE.MeshStandardMaterial({ color: 0xd4a017, roughness: 0.6, metalness: 0.12 }),
+  );
+  hazard.position.set(0, 0.62, 0.92);
+  group.add(hazard);
+  return group;
+}
+
+export function makeTocSignage(textures: EnvTextures) {
+  const group = new THREE.Group();
+  const board = new THREE.Mesh(
+    new THREE.BoxGeometry(2.4, 0.9, 0.08),
+    matFromTex(textures.paint, 0.72, 0.25, 0x3a4a38),
+  );
+  board.position.y = 2.6;
+  group.add(board);
+  const label = new THREE.Mesh(
+    new THREE.BoxGeometry(1.6, 0.35, 0.02),
+    new THREE.MeshStandardMaterial({ color: 0xd4c8a0, roughness: 0.75, metalness: 0.08 }),
+  );
+  label.position.set(0, 2.65, -0.05);
+  group.add(label);
+  const stripe = new THREE.Mesh(
+    new THREE.BoxGeometry(2.35, 0.08, 0.09),
+    new THREE.MeshStandardMaterial({ color: 0xd4a017, roughness: 0.65, metalness: 0.1 }),
+  );
+  stripe.position.set(0, 2.95, -0.04);
+  group.add(stripe);
+  const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.08, 2.4, 8), matFromTex(textures.metal, 0.5, 0.6, 0x555850));
+  mast.position.y = 1.2;
+  group.add(mast);
+  return group;
+}
+
+export function makeGuardTowerEnhanced(textures: EnvTextures, mobile = false) {
+  const tower = makeWatchTower(textures);
+  const sandbags = makeSandbagWall(textures, 3.6, 1.0);
+  sandbags.position.y = 0;
+  tower.add(sandbags);
+  const wire = makeConcertinaWire(2.8, mobile ? 8 : 12);
+  wire.position.set(0, 6.8, 1.6);
+  tower.add(wire);
+  return tower;
+}
+
+/**
+ * FOB dressing — perimeter wire, bunkers, hardstands, floodlights, HQ cues.
+ * Visual-only props skip colliders where noted so extract LZ and doorways stay open.
+ */
+export function addMilitaryFobDressing(
+  scene: THREE.Scene,
+  colliders: THREE.Box3[],
+  textures: EnvTextures,
+  mobile = false,
+) {
+  const add = (obj: THREE.Object3D, x: number, y: number, z: number, rotY = 0, collide = true) => {
+    obj.position.set(x, y, z);
+    obj.rotation.y = rotY;
+    scene.add(obj);
+    obj.updateMatrixWorld(true);
+    if (collide) colliders.push(new THREE.Box3().setFromObject(obj));
+  };
+  const decor = (obj: THREE.Object3D, x: number, y: number, z: number, rotY = 0) =>
+    add(obj, x, y, z, rotY, false);
+
+  const wall = 60;
+  const wireCoils = mobile ? 8 : 14;
+
+  // Concertina on perimeter wall crests (visual — no collider).
+  for (const [x, z, rot] of [
+    [0, -wall + 0.4, 0],
+    [0, wall - 0.4, 0],
+    [-wall + 0.4, 0, Math.PI / 2],
+    [wall - 0.4, 0, Math.PI / 2],
+  ] as const) {
+    const span = mobile ? 18 : 28;
+    for (let i = -1; i <= 1; i += 1) {
+      const wire = makeConcertinaWire(span, wireCoils);
+      const wx = x + (rot === 0 ? i * (span * 0.85) : 0);
+      const wz = z + (rot !== 0 ? i * (span * 0.85) : 0);
+      decor(wire, wx, 5.05, wz, rot);
+    }
+  }
+
+  // Inner HESCO berm line — breaks sightlines without sealing the yard.
+  (
+    [
+      [-wall + 4, -wall + 4, 0],
+      [wall - 4, -wall + 4, Math.PI],
+      [-wall + 4, wall - 8, Math.PI / 2],
+      [wall - 4, wall - 8, -Math.PI / 2],
+    ] as Array<[number, number, number]>
+  ).forEach(([x, z, rot]) => {
+    const line = makeHescoWallLine(textures, mobile ? 3 : 5);
+    add(line, x, 0, z, rot);
+  });
+
+  // Ammo bunkers flanking the south approach.
+  add(makeAmmoBunker(textures), -22, 0, -34, Math.PI / 2);
+  add(makeAmmoBunker(textures), 22, 0, -34, -Math.PI / 2);
+
+  // Vehicle hardstands near hangar and warehouses.
+  decor(makeVehicleHardstand(textures, 12, 8), -34, 0, -22, 0);
+  decor(makeVehicleHardstand(textures, 11, 7), 34, 0, -20, Math.PI);
+  decor(makeVehicleHardstand(textures, 14, 9), 0, 0, -38, 0);
+
+  // Fuel bladders at POL point.
+  add(makeFuelBladder(textures), -24, 0, -22);
+  add(makeFuelBladder(textures), -26, 0, -20, 0.3);
+  if (!mobile) add(makeFuelBladder(textures), 24, 0, -20, -0.2);
+
+  // HQ / TOC signage at intel warehouse (east).
+  decor(makeTocSignage(textures), 48, 0, -18, -Math.PI / 2);
+
+  // Camo net on west warehouse roofline.
+  decor(makeCamoNetDrape(11, 5), -48, 7.8, -14);
+
+  // Perimeter floodlight masts — alternate with road lamps.
+  const floodPositions: Array<[number, number, number]> = mobile
+    ? [
+        [-wall + 8, 0, -wall + 10],
+        [wall - 8, 0, wall - 14],
+      ]
+    : [
+        [-wall + 8, 0, -wall + 10],
+        [wall - 8, 0, -wall + 10],
+        [-wall + 8, 0, wall - 14],
+        [wall - 8, 0, wall - 14],
+        [0, 0, -wall + 6],
+      ];
+  floodPositions.forEach(([x, z, rot]) => {
+    const mast = makeFloodlightMast(textures, mobile);
+    decor(mast, x, 0, z, rot);
+    if (mast.userData.spot) {
+      const spot = mast.userData.spot as THREE.SpotLight;
+      spot.target.position.set(x + Math.sin(rot) * 12, 0, z + Math.cos(rot) * 12);
+      scene.add(spot.target);
+    }
+  });
+
+  // Checkpoint lane markers at north gate.
+  for (const x of [-4.5, 4.5]) {
+    decor(makeJerseyBarrier(textures), x, 0, wall - 3.5, x > 0 ? -0.08 : 0.08);
+  }
 }

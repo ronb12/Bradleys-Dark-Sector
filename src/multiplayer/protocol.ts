@@ -82,7 +82,13 @@ export type ServerMessage =
   | { type: "player_respawn"; id: string; x: number; z: number; health: number }
   | { type: "match_over"; winnerTeam: number; teamScores: [number, number]; scoreLimit: number };
 
+// Production builds must point at an explicit wss:// endpoint — except when the
+// built page itself is served from this machine (vite preview, local QA), where
+// the local dev PVP server is the only sensible target.
+const isLocalPage =
+  typeof window !== "undefined"
+  && ["localhost", "127.0.0.1", "::1", "[::1]"].includes(window.location.hostname);
 export const DEFAULT_PVP_WS_URL =
   import.meta.env.VITE_PVP_WS_URL
-  || (import.meta.env.PROD ? "" : "ws://127.0.0.1:2567");
+  || (import.meta.env.PROD && !isLocalPage ? "" : "ws://127.0.0.1:2567");
 export const DEFAULT_PVP_ROOM = "dark-sector";

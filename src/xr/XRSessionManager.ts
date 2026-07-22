@@ -1,11 +1,12 @@
 import * as THREE from "three";
 import type { WeaponId } from "../game/weapons";
 import { VRButton } from "three/addons/webxr/VRButton.js";
-import { graphicsConfig, type GraphicsPreset } from "../game/settings";
+import { xrGraphicsConfig } from "../game/settings";
 import { XRRig } from "./XRRig";
 import { XRInput } from "./XRInput";
 import { XRHud } from "./XRHud";
 import { XRMenu } from "./XRMenu";
+import { XRReticle } from "./XRReticle";
 import type { XRMenuAction } from "./types";
 
 export type XRRuntime = {
@@ -13,6 +14,7 @@ export type XRRuntime = {
   input: XRInput;
   hud: XRHud;
   menu: XRMenu;
+  reticle: XRReticle;
   presenting: boolean;
   buttonEl: HTMLElement | null;
   weaponsOnGrip: boolean;
@@ -28,6 +30,14 @@ type SessionCallbacks = {
   onMenuAction: (action: XRMenuAction) => void;
 };
 
+/** True while an immersive-vr session owns the framebuffer / headset pose. */
+export function isXrPresenting(
+  renderer: THREE.WebGLRenderer,
+  runtime?: Pick<XRRuntime, "presenting"> | null
+) {
+  return Boolean(runtime?.presenting || renderer.xr.isPresenting);
+}
+
 export function createXRRuntime(
   renderer: THREE.WebGLRenderer,
   scene: THREE.Scene,
@@ -36,11 +46,20 @@ export function createXRRuntime(
   callbacks: SessionCallbacks
 ): XRRuntime {
   renderer.xr.enabled = true;
+  // Must be set before the session starts — ignored if changed mid-session.
+  if (typeof renderer.xr.setReferenceSpaceType === "function") {
+    renderer.xr.setReferenceSpaceType("local-floor");
+  }
+  if (typeof renderer.xr.setFramebufferScaleFactor === "function") {
+    renderer.xr.setFramebufferScaleFactor(xrGraphicsConfig().framebufferScale);
+  }
 
   const rig = new XRRig(scene, camera);
-  const input = new XRInput(renderer, scene);
+  // Controllers share the locomotion origin with the camera (see XRInput).
+  const input = new XRInput(renderer, rig.root);
   const hud = new XRHud(scene);
   const menu = new XRMenu(scene, (action) => callbacks.onMenuAction(action));
+  const reticle = new XRReticle(scene);
 
   let buttonEl: HTMLElement | null = null;
   try {
@@ -100,6 +119,7 @@ export function createXRRuntime(
     input,
     hud,
     menu,
+    reticle,
     presenting: false,
     buttonEl,
     weaponsOnGrip: false,
@@ -116,11 +136,23 @@ export function createXRRuntime(
     runtime.previousShadow = renderer.shadowMap.enabled;
     runtime.previousFog = scene.fog instanceof THREE.FogExp2 ? scene.fog.density : 0.01;
     rig.enterSession(camera);
+    // FPS viewmodels are head-locked — hide until grip-attached or they read as a
+    // face-glued "screen" that moves with every head turn on Quest.
+    for (const child of [...camera.children]) {
+      if (child === vignette) continue;
+      child.visible = false;
+      child.userData._xrHiddenViewmodel = true;
+    }
     camera.add(vignette);
     vignette.visible = true;
+    (vignette.material as THREE.MeshBasicMaterial).opacity = 0;
     applyXrGraphics(renderer, scene, true);
     input.setRaysVisible(true);
-    hud.setVisible(true);
+    input.bindSession(renderer.xr.getSession());
+    // Keep the tactical HUD out of the startup menu; overlapping world panels
+    // at different depths are uncomfortable and look duplicated per eye.
+    hud.setVisible(false);
+    reticle.setVisible(false);
     menu.showMain();
     if (document.pointerLockElement) document.exitPointerLock();
     callbacks.onPresentingChange(true);
@@ -129,13 +161,25 @@ export function createXRRuntime(
   const onEnd = () => {
     runtime.presenting = false;
     runtime.weaponsOnGrip = false;
+    input.bindSession(null);
     camera.remove(vignette);
     vignette.visible = false;
     (vignette.material as THREE.MeshBasicMaterial).opacity = 0;
+    camera.traverse((obj) => {
+      if (!obj.userData._xrHiddenViewmodel) return;
+      delete obj.userData._xrHiddenViewmodel;
+      // Player weapon meshes stay crosshair-only — never restore them on exit.
+      if (obj.userData.playerViewmodel && !PLAYER_WEAPON_MESHES_VISIBLE) {
+        obj.visible = false;
+        return;
+      }
+      obj.visible = true;
+    });
     rig.exitSession(camera, scene);
     applyXrGraphics(renderer, scene, false, runtime);
     input.setRaysVisible(false);
     hud.setVisible(false);
+    reticle.setVisible(false);
     menu.hide();
     callbacks.onPresentingChange(false);
   };
@@ -155,14 +199,80 @@ function applyXrGraphics(
   runtime?: XRRuntime
 ) {
   if (entering) {
-    const gfx = graphicsConfig("low" as GraphicsPreset);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.25));
+    const gfx = xrGraphicsConfig();
+    // Do NOT call setPixelRatio here — WebXRManager already sets it to 1 when the
+    // session starts; changing `_pixelRatio` mid-present can desync the XR layer
+    // and read as a head-locked "screen" on Quest Browser.
     renderer.shadowMap.enabled = false;
-    if (scene.fog instanceof THREE.FogExp2) scene.fog.density = gfx.fogDensity * 1.05;
+    renderer.shadowMap.autoUpdate = false;
+    if (scene.fog instanceof THREE.FogExp2) scene.fog.density = gfx.fogDensity;
+    // Cheap XR soften pass — only touch known heavy lights / fog planes (no full-scene
+    // traverse on sessionstart; that hitch was freezing Quest's VR runtime).
+    for (const obj of scene.children) {
+      softenObjectForXr(obj);
+    }
   } else if (runtime) {
+    if (typeof renderer.xr.setFramebufferScaleFactor === "function") {
+      renderer.xr.setFramebufferScaleFactor(1);
+    }
     renderer.setPixelRatio(runtime.previousPixelRatio);
     renderer.shadowMap.enabled = runtime.previousShadow;
+    renderer.shadowMap.autoUpdate = true;
     if (scene.fog instanceof THREE.FogExp2) scene.fog.density = runtime.previousFog;
+    scene.traverse((obj) => {
+      if (obj.userData._xrHiddenFog) {
+        obj.visible = true;
+        delete obj.userData._xrHiddenFog;
+      }
+      if (typeof obj.userData._xrPrevCastShadow === "boolean") {
+        obj.castShadow = obj.userData._xrPrevCastShadow;
+        delete obj.userData._xrPrevCastShadow;
+      }
+      if (obj instanceof THREE.PointLight && typeof obj.userData._xrPrevIntensity === "number") {
+        obj.intensity = obj.userData._xrPrevIntensity;
+        delete obj.userData._xrPrevIntensity;
+      }
+    });
+  }
+}
+
+function softenObjectForXr(obj: THREE.Object3D) {
+  if (obj.name === "SkyDome") return;
+  if (obj instanceof THREE.Mesh) {
+    if (obj.material instanceof THREE.MeshBasicMaterial && obj.material.opacity < 0.08) {
+      obj.visible = false;
+      obj.userData._xrHiddenFog = true;
+    }
+    obj.userData._xrPrevCastShadow = obj.castShadow;
+    obj.castShadow = false;
+  }
+  if (obj instanceof THREE.PointLight && obj.userData.fireLight) {
+    obj.userData._xrPrevIntensity = obj.intensity;
+    obj.intensity = Math.min(obj.intensity, 1.6);
+    obj.distance = Math.min(obj.distance || 16, 10);
+  }
+  // One level of children only — enough for fire groups / fog planes without walking the whole compound.
+  for (const child of obj.children) {
+    if (child instanceof THREE.Mesh || child instanceof THREE.PointLight || child.name?.includes("Fog")) {
+      softenObjectForXr(child);
+    }
+  }
+}
+
+/**
+ * Player FPS / grip weapon meshes stay hidden — aim via desktop crosshair or
+ * XRReticle. Mechanics still use activeWeapon + controller shot pose.
+ * Flip to true only when shipping visible viewmodels again.
+ */
+export const PLAYER_WEAPON_MESHES_VISIBLE = false;
+
+/** Tag + force visibility for all player weapon view groups. */
+export function applyPlayerWeaponVisibility(weapons: Record<WeaponId, THREE.Group>) {
+  for (const weapon of Object.values(weapons)) {
+    weapon.userData.playerViewmodel = true;
+    weapon.visible = PLAYER_WEAPON_MESHES_VISIBLE;
+    // Session-end restore must never re-show these while meshes are disabled.
+    delete weapon.userData._xrHiddenViewmodel;
   }
 }
 
@@ -172,16 +282,32 @@ export function attachWeaponsToGrip(
   active: WeaponId
 ) {
   const grip = runtime.input.getWeaponGrip();
-  if (!grip) return;
+  if (!grip) return false;
   for (const weapon of Object.values(weapons)) {
+    delete weapon.userData._xrHiddenViewmodel;
     if (weapon.parent !== grip) grip.add(weapon);
-    weapon.position.set(0, -0.02, -0.08);
-    weapon.rotation.set(-0.12, 0, 0);
+    weapon.traverse((child) => {
+      if (child instanceof THREE.Mesh) {
+        child.castShadow = false;
+        delete child.userData._xrHiddenViewmodel;
+      }
+    });
   }
-  weapons.m4.visible = active === "m4";
-  weapons.smg.visible = active === "smg";
-  weapons.pistol.visible = active === "pistol";
+  // Keep physical grip-local poses for shot-origin consistency even while meshes
+  // are invisible (crosshair / XRReticle carry aiming feedback).
+  weapons.m4.scale.setScalar(0.58);
+  weapons.m4.position.set(0, -0.11, -0.29);
+  weapons.m4.rotation.set(-0.16, 0, 0);
+  weapons.smg.scale.set(0.5, 0.5, 0.44);
+  weapons.smg.position.set(0, -0.1, -0.24);
+  weapons.smg.rotation.set(-0.14, 0, 0);
+  weapons.pistol.scale.setScalar(0.68);
+  weapons.pistol.position.set(0, -0.13, -0.16);
+  weapons.pistol.rotation.set(-0.12, 0, 0);
+  void active;
+  applyPlayerWeaponVisibility(weapons);
   runtime.weaponsOnGrip = true;
+  return true;
 }
 
 export function detachWeaponsFromGrip(
@@ -196,6 +322,10 @@ export function detachWeaponsFromGrip(
   weapons.smg.rotation.set(-0.08, -0.1, 0.05);
   weapons.pistol.position.set(0.3, -0.43, -0.82);
   weapons.pistol.rotation.set(-0.04, -0.08, 0.03);
+  weapons.m4.scale.setScalar(1);
+  weapons.smg.scale.set(0.82, 0.82, 0.72);
+  weapons.pistol.scale.setScalar(1);
+  applyPlayerWeaponVisibility(weapons);
   runtime.weaponsOnGrip = false;
 }
 
@@ -217,6 +347,7 @@ export function disposeXRRuntime(
   detachWeaponsFromGrip(runtime, camera, weapons);
   runtime.hud.dispose(scene);
   runtime.menu.dispose(scene);
+  runtime.reticle.dispose(scene);
   runtime.input.dispose();
   runtime.rig.exitSession(camera, scene);
   runtime.rig.dispose(scene);

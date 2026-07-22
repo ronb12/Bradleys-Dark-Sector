@@ -1,5 +1,8 @@
 /** Mission structure beyond pure waves — secure, defend, rescue, sabotage, extract. */
 
+import { waveMissionLabel, type CombatSceneId } from "./maps";
+import { EXTRACT_HOLD_SEC, EXTRACT_LZ } from "./helicopter";
+
 export type MissionType =
   | "secure_intel"
   | "breach_secure"
@@ -31,6 +34,8 @@ export type ActiveMission = {
   complete: boolean;
   failed: boolean;
   scoreBonus: number;
+  /** When true, completing this mission ends the solo run successfully. */
+  endsRun: boolean;
 };
 
 export type MissionHooks = {
@@ -43,8 +48,9 @@ export type MissionHooks = {
   roomId?: "loading" | "intel" | null;
 };
 
-const MISSION_POOL: Array<Omit<ActiveMission, "phase" | "timerSec" | "progress" | "complete" | "failed" | "scoreBonus" | "objectives"> & {
+const MISSION_POOL: Array<Omit<ActiveMission, "phase" | "timerSec" | "progress" | "complete" | "failed" | "scoreBonus" | "endsRun" | "objectives"> & {
   buildObjectives: () => MissionObjective[];
+  endsRun?: boolean;
 }> = [
   {
     type: "breach_secure",
@@ -94,7 +100,7 @@ const MISSION_POOL: Array<Omit<ActiveMission, "phase" | "timerSec" | "progress" 
     type: "defend",
     title: "Defend the Helipad",
     briefing: "Hostile QRF inbound. Hold the helipad for 90 seconds.",
-    markers: [{ id: "helipad", x: -22, z: 12, radius: 8, kind: "zone" }],
+    markers: [{ id: "helipad", x: EXTRACT_LZ.x, z: EXTRACT_LZ.z, radius: EXTRACT_LZ.radius, kind: "zone" }],
     targetTimerSec: 90,
     buildObjectives: () => [
       { id: "enter", label: "Enter the helipad zone", done: false },
@@ -133,21 +139,24 @@ const MISSION_POOL: Array<Omit<ActiveMission, "phase" | "timerSec" | "progress" 
   },
   {
     type: "extraction",
-    title: "Extraction Window",
-    briefing: "Survive until the bird arrives, then reach the LZ.",
-    markers: [{ id: "lz", x: -22, z: 12, radius: 7, kind: "extract" }],
-    targetTimerSec: 75,
+    title: "Helicopter Extraction",
+    briefing: "Reach the LZ, hold for the bird, then board — extract ends the mission.",
+    markers: [{ id: "lz", x: EXTRACT_LZ.x, z: EXTRACT_LZ.z, radius: EXTRACT_LZ.radius, kind: "extract" }],
+    /** Hold duration (seconds) once the player is on the LZ. */
+    targetTimerSec: EXTRACT_HOLD_SEC,
+    endsRun: true,
     buildObjectives: () => [
-      { id: "wait", label: "Survive until extraction arrives", done: false },
-      { id: "board", label: "Reach the LZ", done: false },
+      { id: "reach", label: "Reach the extraction LZ", done: false },
+      { id: "hold", label: "Hold the LZ for the bird", done: false },
+      { id: "board", label: "Board the helicopter", done: false },
     ],
   },
 ];
 
-export function createWaveMission(wave: number): ActiveMission {
+export function createWaveMission(wave: number, sceneId: CombatSceneId = "compound"): ActiveMission {
   return {
     type: "waves",
-    title: `Wave ${wave} — Compound Sweep`,
+    title: `Wave ${wave} — ${waveMissionLabel(sceneId)}`,
     briefing: "Eliminate all hostiles in the AO.",
     objectives: [{ id: "clear", label: "Clear remaining hostiles", done: false }],
     markers: [],
@@ -158,13 +167,35 @@ export function createWaveMission(wave: number): ActiveMission {
     complete: false,
     failed: false,
     scoreBonus: 0,
+    endsRun: false,
   };
 }
 
-export function pickMissionForWave(wave: number): ActiveMission {
-  if (wave <= 1) return createWaveMission(wave);
+/** QA helper: force the helicopter extraction mission regardless of wave rotation. */
+export function createExtractionMission(): ActiveMission {
+  const template = MISSION_POOL.find((m) => m.type === "extraction")!;
+  return {
+    type: template.type,
+    title: template.title,
+    briefing: template.briefing,
+    objectives: template.buildObjectives(),
+    markers: template.markers.map((m) => ({ ...m })),
+    phase: 0,
+    timerSec: 0,
+    targetTimerSec: template.targetTimerSec,
+    progress: 0,
+    complete: false,
+    failed: false,
+    scoreBonus: 0,
+    endsRun: true,
+  };
+}
+
+export function pickMissionForWave(wave: number, sceneId: CombatSceneId = "compound"): ActiveMission {
+  if (sceneId !== "compound") return createWaveMission(wave, sceneId);
+  if (wave <= 1) return createWaveMission(wave, sceneId);
   // Every other wave is a structured mission; odd waves stay classic clear.
-  if (wave % 2 === 1) return createWaveMission(wave);
+  if (wave % 2 === 1) return createWaveMission(wave, sceneId);
   const template = MISSION_POOL[(Math.floor(wave / 2) - 1) % MISSION_POOL.length];
   return {
     type: template.type,
@@ -179,6 +210,7 @@ export function pickMissionForWave(wave: number): ActiveMission {
     complete: false,
     failed: false,
     scoreBonus: 0,
+    endsRun: Boolean(template.endsRun),
   };
 }
 
@@ -310,16 +342,45 @@ export function updateMission(mission: ActiveMission, hooks: MissionHooks): Acti
   }
 
   if (m.type === "extraction") {
+    const lz = m.markers[0];
+    const inside = inRadius(hooks.playerX, hooks.playerZ, lz.x, lz.z, lz.radius);
+    const holdSec = m.targetTimerSec || EXTRACT_HOLD_SEC;
+
+    // Phase 0 — get on the pad.
     if (!m.objectives[0].done) {
-      m.progress = Math.min(1, m.timerSec / (m.targetTimerSec || 75));
-      if (m.progress >= 1) m.objectives[0].done = true;
-    }
-    if (m.objectives[0].done) {
-      const lz = m.markers[0];
-      if (inRadius(hooks.playerX, hooks.playerZ, lz.x, lz.z, lz.radius)) {
+      m.phase = 0;
+      m.progress = 0;
+      if (inside) {
+        m.objectives[0].done = true;
+        m.phase = 1;
+      }
+    } else if (!m.objectives[1].done) {
+      // Phase 1 — hold LZ; leaving pauses progress (does not reset).
+      m.phase = 1;
+      if (inside) {
+        m.progress = Math.min(1, m.progress + hooks.dt / holdSec);
+      }
+      if (m.progress >= 1) {
         m.objectives[1].done = true;
+        m.phase = 2;
+        m.progress = 1;
+        // Already on the pad when the bird goes on station — board immediately.
+        if (inside) {
+          m.objectives[2].done = true;
+          m.complete = true;
+          m.endsRun = true;
+          m.scoreBonus = 800;
+        }
+      }
+    } else if (!m.objectives[2].done) {
+      // Phase 2 — bird on station; stay/enter LZ to board and end the run.
+      m.phase = 2;
+      m.progress = 1;
+      if (inside) {
+        m.objectives[2].done = true;
         m.complete = true;
-        m.scoreBonus = 550;
+        m.endsRun = true;
+        m.scoreBonus = 800;
       }
     }
   }
@@ -330,12 +391,39 @@ export function updateMission(mission: ActiveMission, hooks: MissionHooks): Acti
 export function missionHudText(mission: ActiveMission): { objective: string; intel: string } {
   const pending = mission.objectives.find((o) => !o.done);
   const doneCount = mission.objectives.filter((o) => o.done).length;
+
+  if (mission.type === "extraction" && !mission.complete) {
+    const lz = mission.markers[0];
+    const holdPct = Math.round(mission.progress * 100);
+    if (!mission.objectives[0]?.done) {
+      return {
+        objective: "Reach the extraction LZ",
+        intel: "Extract bird inbound. Move to the amber helipad LZ and prepare to hold.",
+      };
+    }
+    if (!mission.objectives[1]?.done) {
+      // Approximate inside check is not available here — guide by phase/progress wording.
+      return {
+        objective: `Hold the LZ for extract (${holdPct}%)`,
+        intel: `Stay inside the amber ring — leaving pauses the hold. Defend until the bird is on station. · ${doneCount}/${mission.objectives.length}`,
+      };
+    }
+    return {
+      objective: "Board the helicopter",
+      intel: `Bird is on station at the LZ (${lz.x.toFixed(0)}, ${lz.z.toFixed(0)}). Enter the ring to extract and end the run.`,
+    };
+  }
+
   return {
     objective: mission.complete
-      ? `MISSION COMPLETE — ${mission.title}`
+      ? mission.endsRun
+        ? `EXTRACT SUCCESS — ${mission.title}`
+        : `MISSION COMPLETE — ${mission.title}`
       : pending?.label || mission.title,
     intel: mission.complete
-      ? `Objective secured. Bonus +${mission.scoreBonus}. Hold for the next wave.`
+      ? mission.endsRun
+        ? `Extract secured. Bonus +${mission.scoreBonus}. Bird is outbound.`
+        : `Objective secured. Bonus +${mission.scoreBonus}. Hold for the next wave.`
       : `${mission.briefing} · ${doneCount}/${mission.objectives.length} objectives`,
   };
 }

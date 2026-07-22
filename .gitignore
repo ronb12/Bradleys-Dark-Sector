@@ -16,6 +16,10 @@ dist-ssr
 .env.*
 !.env.example
 qa-artifacts
+.tools
+quest-launcher/.gradle
+quest-launcher/**/build
+quest-launcher/local.properties
 
 # Editor directories and files
 .vscode/*

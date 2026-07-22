@@ -2,6 +2,7 @@ import type * as THREE from "three";
 
 export type XRHudSnapshot = {
   health: number;
+  maxHealth: number;
   ammo: number | string;
   weapon: string;
   score: number;
@@ -15,6 +16,8 @@ export type XRHudSnapshot = {
   rangeChallengeActive: boolean;
   rangeChallengeTime: number;
   subtitle: string;
+  medkits: number;
+  grenades: number;
 };
 
 export type XRMenuAction =

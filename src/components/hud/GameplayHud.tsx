@@ -6,6 +6,7 @@ type GameMode = "solo" | "pvp" | "range";
 
 export type GameplayHudData = {
   health: number;
+  maxHealth: number;
   ammo: number | string;
   activeWeapon: WeaponId;
   m4Ammo: number;
@@ -133,13 +134,14 @@ function WeaponStatus({ hud, reduceMotion }: Pick<GameplayHudProps, "hud" | "red
 }
 
 function VitalStatus({ hud, reduceMotion }: Pick<GameplayHudProps, "hud" | "reduceMotion">) {
-  const critical = hud.health <= 25;
-  const damaged = hud.health <= 55;
+  const hpPct = Math.round((hud.health / Math.max(1, hud.maxHealth)) * 100);
+  const critical = hpPct <= 25;
+  const damaged = hpPct <= 55;
   const color = critical ? "bg-rose-400" : damaged ? "bg-amber-300" : "bg-emerald-300";
   return (
     <div
       className={`${panel} relative w-[200px] max-w-full border-l-2 ${critical ? `border-l-rose-400 ${reduceMotion ? "" : "animate-pulse"}` : damaged ? "border-l-amber-300" : "border-l-emerald-300"} px-3 py-2.5`}
-      aria-label={`Armor integrity ${hud.health} percent${critical ? ", critical" : damaged ? ", damaged" : ", stable"}`}
+      aria-label={`Armor integrity ${hpPct} percent${critical ? ", critical" : damaged ? ", damaged" : ", stable"}`}
     >
       <div className="flex items-center justify-between gap-2">
         <span className={label}>{hud.gameMode === "range" ? "Range safety" : "Armor integrity"}</span>
@@ -148,12 +150,18 @@ function VitalStatus({ hud, reduceMotion }: Pick<GameplayHudProps, "hud" | "redu
         </span>
       </div>
       <div className="mt-1 flex items-end gap-2">
-        <span className="font-mono text-2xl font-black leading-none text-white">{hud.health}</span>
+        <span className="font-mono text-2xl font-black leading-none text-white">{hpPct}</span>
         <span className="pb-0.5 text-[9px] text-slate-500">%</span>
       </div>
       <div className="mt-2 h-1 overflow-hidden bg-slate-800">
-        <div className={`h-full ${color}`} style={{ width: `${hud.health}%` }} />
+        <div className={`h-full ${color}`} style={{ width: `${hpPct}%` }} />
       </div>
+      {hud.gameMode === "solo" ? (
+        <div className="mt-2 flex gap-3 font-mono text-[9px] uppercase tracking-wider text-slate-400">
+          <span className="text-rose-200/90">Med ×{hud.medkits}</span>
+          <span className="text-amber-100/85">Frag ×{hud.grenades}</span>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -172,7 +180,7 @@ function PerformancePanel({ hud }: Pick<GameplayHudProps, "hud">) {
                 : `${hud.score} score · ${hud.streak} streak`}
           </div>
           <div className="mt-0.5 text-[8px] uppercase tracking-wider text-slate-500">
-            {hud.gameMode === "range" ? `Best ${hud.rangeBestScore}` : `${hud.medkits} medkits`}
+            {hud.gameMode === "range" ? `Best ${hud.rangeBestScore}` : `Medkits ${hud.medkits} · Frags ${hud.grenades}`}
           </div>
         </div>
         <div className="shrink-0">
@@ -185,7 +193,8 @@ function PerformancePanel({ hud }: Pick<GameplayHudProps, "hud">) {
 }
 
 function MobileHud({ hud, pvpRoom, reduceMotion }: Omit<GameplayHudProps, "touchDevice">) {
-  const critical = hud.health <= 25;
+  const hpPct = Math.round((hud.health / Math.max(1, hud.maxHealth)) * 100);
+  const critical = hpPct <= 25;
   const reloading = hud.ammo === "RELOAD";
   const showMissionStrip = hud.gameMode !== "range" || hud.rangeChallengeActive;
 

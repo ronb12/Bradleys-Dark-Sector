@@ -1,5 +1,6 @@
 /** Deeper spatial audio: footsteps by surface, distant fire, ricochets, explosions, callouts. */
 
+import { EXTRACT_LZ } from "./helicopter";
 import { ENEMY_CALLOUT_LINES, enemyCalloutLine } from "./radioLines";
 import type { WeaponId } from "./weapons";
 
@@ -20,7 +21,12 @@ export type ImmersiveAudio = {
   setGameMode: (mode: AudioGameMode) => void;
   playWeaponFire: (weapon: WeaponId, opts?: { distant?: boolean }) => void;
   playReload: (weapon: WeaponId) => void;
+  playReloadComplete: () => void;
   playEmpty: () => void;
+  playHitConfirm: () => void;
+  playArmorHit: () => void;
+  playKillConfirm: () => void;
+  playNearMiss: () => void;
   playSwitch: () => void;
   playRadio: (line: string, opts?: { channel?: RadioChannel }) => void;
   /** Cancel pending TTS, radio sting, and speech synthesis. */
@@ -33,12 +39,19 @@ export type ImmersiveAudio = {
   playRangeChallengeBeep: (kind?: "start" | "end") => void;
   playFootstep: (surface: SurfaceType) => void;
   playImpact: (kind: "dirt" | "metal" | "flesh") => void;
+  /** Wet synth layer on top of flesh impact — hit vs kill intensity. */
+  playGoreImpact: (severity?: "hit" | "kill") => void;
   playRicochet: () => void;
   playShellCasing: () => void;
   playExplosion: (distance?: number) => void;
   playDistantGunfire: () => void;
+  playArtilleryThump: () => void;
+  playVehicleBoom: () => void;
   playSuppression: () => void;
   playEnemyCallout: (line: string) => void;
+  /** Looping synthesized rotor wash; proximity 0–1 scales volume. */
+  setRotorAudio: (proximity: number) => void;
+  stopRotorAudio: () => void;
   dispose: () => void;
 };
 
@@ -128,6 +141,11 @@ export function createImmersiveAudio(): ImmersiveAudio {
   let rangeAmbOsc: OscillatorNode | null = null;
   let rangeAmbGain: GainNode | null = null;
   let rangeAmbLfo: OscillatorNode | null = null;
+  let rotorGain: GainNode | null = null;
+  let rotorNoise: AudioBufferSourceNode | null = null;
+  let rotorThrob: OscillatorNode | null = null;
+  let rotorFilter: BiquadFilterNode | null = null;
+  let rotorActive = false;
 
   const allSamples = () => [
     ...firePools.m4,
@@ -158,11 +176,51 @@ export function createImmersiveAudio(): ImmersiveAudio {
     oscillator.stop(context.currentTime + duration);
   };
 
-  const playOne = (audio: HTMLAudioElement, volumeScale = 1) => {
+  const playOne = (audio: HTMLAudioElement, volumeScale = 1, playbackRate = 1) => {
     if (muted) return;
     audio.volume = Math.min(1, Math.max(0, volumeScale * master * sfx));
+    audio.playbackRate = playbackRate;
     audio.currentTime = 0;
     void audio.play().catch(() => undefined);
+  };
+
+  const ensureContext = () => {
+    context ??= new AudioContext();
+    if (context.state === "suspended") void context.resume();
+    return context;
+  };
+
+  const tonePair = (f1: number, f2: number, dur: number, vol: number, gapMs = 55) => {
+    tone(f1, dur, vol);
+    window.setTimeout(() => {
+      if (!muted) tone(f2, dur * 0.85, vol * 0.82);
+    }, gapMs);
+  };
+
+  const playWetSquelch = (severity: "hit" | "kill") => {
+    const ctx = ensureContext();
+    if (muted) return;
+    const dur = severity === "kill" ? 0.15 : 0.095;
+    const vol = (severity === "kill" ? 0.085 : 0.058) * master * sfx;
+    const sampleCount = Math.max(1, Math.floor(ctx.sampleRate * dur));
+    const buffer = ctx.createBuffer(1, sampleCount, ctx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < sampleCount; i += 1) {
+      const fade = 1 - i / sampleCount;
+      data[i] = (Math.random() * 2 - 1) * fade * fade;
+    }
+    const src = ctx.createBufferSource();
+    src.buffer = buffer;
+    const filter = ctx.createBiquadFilter();
+    filter.type = "lowpass";
+    filter.frequency.value = severity === "kill" ? 380 : 520;
+    filter.Q.value = 0.85;
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(vol, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + dur);
+    src.connect(filter).connect(gain).connect(ctx.destination);
+    src.start();
+    tone(severity === "kill" ? 68 : 92, dur * 0.72, vol * 0.48);
   };
 
   const clearRadioTimer = () => {
@@ -213,6 +271,84 @@ export function createImmersiveAudio(): ImmersiveAudio {
     stopRangeAmbienceInternal();
   };
 
+  const stopRotorInternal = () => {
+    if (rotorThrob) {
+      try {
+        rotorThrob.stop();
+      } catch {
+        /* already stopped */
+      }
+      rotorThrob.disconnect();
+      rotorThrob = null;
+    }
+    if (rotorNoise) {
+      try {
+        rotorNoise.stop();
+      } catch {
+        /* already stopped */
+      }
+      rotorNoise.disconnect();
+      rotorNoise = null;
+    }
+    if (rotorFilter) {
+      rotorFilter.disconnect();
+      rotorFilter = null;
+    }
+    if (rotorGain) {
+      rotorGain.disconnect();
+      rotorGain = null;
+    }
+    rotorActive = false;
+  };
+
+  const ensureRotorGraph = () => {
+    context ??= new AudioContext();
+    if (context.state === "suspended") void context.resume();
+    if (rotorActive && rotorGain) return;
+
+    stopRotorInternal();
+
+    const sampleRate = context.sampleRate;
+    const buffer = context.createBuffer(1, sampleRate * 2, sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < data.length; i += 1) {
+      data[i] = (Math.random() * 2 - 1) * 0.55;
+    }
+
+    const noise = context.createBufferSource();
+    noise.buffer = buffer;
+    noise.loop = true;
+
+    const filter = context.createBiquadFilter();
+    filter.type = "bandpass";
+    filter.frequency.value = 280;
+    filter.Q.value = 0.7;
+
+    const throb = context.createOscillator();
+    throb.type = "sine";
+    throb.frequency.value = 22;
+    const throbGain = context.createGain();
+    throbGain.gain.value = 0.012;
+
+    const gain = context.createGain();
+    gain.gain.value = 0.0001;
+
+    noise.connect(filter);
+    filter.connect(gain);
+    throb.connect(throbGain);
+    throbGain.connect(gain);
+    gain.connect(context.destination);
+
+    noise.start();
+    throb.start();
+
+    rotorNoise = noise;
+    rotorFilter = filter;
+    rotorThrob = throb;
+    rotorGain = gain;
+    rotorActive = true;
+  };
+
   return {
     get muted() {
       return muted;
@@ -232,6 +368,7 @@ export function createImmersiveAudio(): ImmersiveAudio {
       muted = next;
       if (muted) {
         stopRangeAudioInternal();
+        stopRotorInternal();
         allSamples().forEach((a) => {
           a.pause();
           a.currentTime = 0;
@@ -258,19 +395,46 @@ export function createImmersiveAudio(): ImmersiveAudio {
       if (opts?.distant) {
         const a = distant[distantIdx % distant.length];
         distantIdx += 1;
-        playOne(a, 0.35);
+        playOne(a, 0.35, 0.92 + Math.random() * 0.08);
         return;
       }
       const pool = firePools[weapon];
       const audio = pool[poolIndex[weapon] % pool.length];
       poolIndex[weapon] += 1;
-      playOne(audio, weapon === "m4" ? 0.24 : 0.38);
+      const baseVol = weapon === "m4" ? 0.26 : weapon === "smg" ? 0.21 : 0.38;
+      playOne(audio, baseVol, 0.94 + Math.random() * 0.12);
     },
     playReload(weapon) {
       playOne(reloads[weapon], 0.34);
     },
+    playReloadComplete() {
+      ensureContext();
+      tonePair(620, 880, 0.045, 0.055, 48);
+    },
     playEmpty() {
-      tone(118, 0.055, 0.08);
+      ensureContext();
+      tone(118, 0.04, 0.07);
+      window.setTimeout(() => {
+        if (!muted) tone(92, 0.035, 0.06);
+      }, 42);
+    },
+    playHitConfirm() {
+      ensureContext();
+      tone(920, 0.028, 0.045);
+    },
+    playArmorHit() {
+      ensureContext();
+      tone(280, 0.04, 0.05);
+      window.setTimeout(() => {
+        if (!muted) tone(420, 0.025, 0.035);
+      }, 30);
+    },
+    playKillConfirm() {
+      ensureContext();
+      tonePair(740, 1180, 0.055, 0.07, 62);
+    },
+    playNearMiss() {
+      playOne(suppression, 0.22, 1.15 + Math.random() * 0.2);
     },
     playSwitch() {
       tone(420, 0.045, 0.035);
@@ -386,6 +550,13 @@ export function createImmersiveAudio(): ImmersiveAudio {
         }
       }
     },
+    playGoreImpact(severity = "hit") {
+      if (muted) return;
+      const a = impactFlesh[fleshIdx % impactFlesh.length];
+      fleshIdx += 1;
+      playOne(a, severity === "kill" ? 0.38 : 0.3, 0.94 + Math.random() * 0.08);
+      playWetSquelch(severity);
+    },
     playRicochet() {
       const a = ricochetPool[ricochetIdx % ricochetPool.length];
       ricochetIdx += 1;
@@ -405,6 +576,12 @@ export function createImmersiveAudio(): ImmersiveAudio {
       distantIdx += 1;
       playOne(a, 0.2 + Math.random() * 0.1);
     },
+    playArtilleryThump() {
+      playOne(explosion, 0.1 + Math.random() * 0.08);
+    },
+    playVehicleBoom() {
+      playOne(explosion, 0.16 + Math.random() * 0.12);
+    },
     playSuppression() {
       playOne(suppression, 0.14);
     },
@@ -420,8 +597,27 @@ export function createImmersiveAudio(): ImmersiveAudio {
       message.volume = 0.45 * master * radio;
       window.speechSynthesis?.speak(message);
     },
+    setRotorAudio(proximity) {
+      if (muted || proximity <= 0.02) {
+        if (rotorGain && context) {
+          rotorGain.gain.setTargetAtTime(0.0001, context.currentTime, 0.12);
+        }
+        if (proximity <= 0.001) stopRotorInternal();
+        return;
+      }
+      ensureRotorGraph();
+      if (!rotorGain || !context || !rotorFilter || !rotorThrob) return;
+      const vol = Math.min(0.22, 0.04 + proximity * 0.2) * master * sfx;
+      rotorGain.gain.setTargetAtTime(vol, context.currentTime, 0.08);
+      rotorFilter.frequency.setTargetAtTime(180 + proximity * 220, context.currentTime, 0.1);
+      rotorThrob.frequency.setTargetAtTime(18 + proximity * 10, context.currentTime, 0.1);
+    },
+    stopRotorAudio() {
+      stopRotorInternal();
+    },
     dispose() {
       stopRangeAudioInternal();
+      stopRotorInternal();
       allSamples().forEach((a) => {
         a.pause();
         a.src = "";
@@ -439,7 +635,7 @@ export function surfaceAtPosition(x: number, z: number): SurfaceType {
   if (Math.abs(z + 12) < 5 && Math.abs(x) < 52) return "asphalt";
   if (Math.abs(z - 22) < 4 && Math.abs(x) < 50) return "asphalt";
   if (Math.abs(Math.abs(x) - 22) < 4 && Math.abs(z) < 48) return "asphalt";
-  if (Math.hypot(x + 22, z - 12) < 7.5) return "concrete";
+  if (Math.hypot(x - EXTRACT_LZ.x, z - EXTRACT_LZ.z) < EXTRACT_LZ.radius + 1.2) return "concrete";
   if (Math.abs(x) > 40 || Math.abs(z) > 40) return "concrete";
   if (Math.abs(x) > 14 && Math.abs(z) > 14) return "dirt";
   return "dirt";
