@@ -28,6 +28,8 @@ export type ImmersiveAudio = {
   playKillConfirm: () => void;
   playNearMiss: () => void;
   playSwitch: () => void;
+  /** Supply crate / death-drop collect cue. */
+  playPickup: (kind?: "medkit" | "ammo" | "armor" | "frag" | "intel") => void;
   playRadio: (line: string, opts?: { channel?: RadioChannel }) => void;
   /** Cancel pending TTS, radio sting, and speech synthesis. */
   stopRadio: () => void;
@@ -439,6 +441,29 @@ export function createImmersiveAudio(): ImmersiveAudio {
     playSwitch() {
       tone(420, 0.045, 0.035);
       window.setTimeout(() => tone(260, 0.055, 0.025), 35);
+    },
+    playPickup(kind = "ammo") {
+      ensureContext();
+      if (kind === "medkit") {
+        tonePair(520, 760, 0.05, 0.06, 55);
+        window.setTimeout(() => {
+          if (!muted) tone(920, 0.04, 0.04);
+        }, 70);
+      } else if (kind === "armor") {
+        tonePair(340, 520, 0.055, 0.07, 48);
+      } else if (kind === "frag") {
+        tone(280, 0.04, 0.05);
+        window.setTimeout(() => {
+          if (!muted) tonePair(480, 640, 0.04, 0.05, 40);
+        }, 45);
+      } else if (kind === "intel") {
+        tonePair(660, 990, 0.06, 0.08, 70);
+        window.setTimeout(() => {
+          if (!muted) tone(1180, 0.05, 0.045);
+        }, 85);
+      } else {
+        tonePair(440, 700, 0.05, 0.055, 50);
+      }
     },
     playRadio(line, opts) {
       const channel: RadioChannel = opts?.channel ?? "mission";

@@ -919,7 +919,8 @@ export function addMilitaryFobDressing(
   // Camo net on west warehouse roofline.
   decor(makeCamoNetDrape(11, 5), -48, 7.8, -14);
 
-  // Perimeter floodlight masts — alternate with road lamps.
+  // Perimeter floodlight masts — never on the road centerline (x≈0). A mast on
+  // the south spine reads as a black "glitch pole" through the spawn crosshair.
   const floodPositions: Array<[number, number, number]> = mobile
     ? [
         [-wall + 8, 0, -wall + 10],
@@ -930,7 +931,8 @@ export function addMilitaryFobDressing(
         [wall - 8, 0, -wall + 10],
         [-wall + 8, 0, wall - 14],
         [wall - 8, 0, wall - 14],
-        [0, 0, -wall + 6],
+        [-9, 0, -wall + 6],
+        [9, 0, -wall + 6],
       ];
   floodPositions.forEach(([x, z, rot]) => {
     const mast = makeFloodlightMast(textures, mobile);

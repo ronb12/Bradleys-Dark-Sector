@@ -17,8 +17,8 @@ export type WeaponConfig = {
 
 export const WEAPONS: Record<WeaponId, WeaponConfig> = {
   m4: {
-    name: "M4A1 CARBINE",
-    shortName: "M4",
+    name: "ASH-4 ATLAS",
+    shortName: "ASH-4",
     slot: 1,
     maxAmmo: 30,
     damage: 34,
@@ -31,8 +31,8 @@ export const WEAPONS: Record<WeaponId, WeaponConfig> = {
     automatic: true,
   },
   smg: {
-    name: "VX-9 SMG",
-    shortName: "VX9",
+    name: "V9 WARDEN",
+    shortName: "V9",
     slot: 2,
     maxAmmo: 36,
     damage: 22,
@@ -45,8 +45,8 @@ export const WEAPONS: Record<WeaponId, WeaponConfig> = {
     automatic: true,
   },
   pistol: {
-    name: "9MM PISTOL",
-    shortName: "PST",
+    name: "KESTREL PISTOL",
+    shortName: "KST",
     slot: 3,
     maxAmmo: 15,
     damage: 27,

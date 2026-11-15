@@ -5,11 +5,14 @@ const NORMAL_COLOR = 0xe7eadf;
 const HIT_COLOR = 0xfda4af;
 const ARMOR_COLOR = 0xfcd34d;
 const KILL_COLOR = 0xffffff;
+const ADS_COLOR = 0xa7f3d0;
 const RETICLE_DISTANCE = 7.5;
 
-/** Weapon-aimed VR crosshair matching the desktop four-post + diamond reticle. */
+/** Weapon-aimed VR crosshair — hipfire posts, ADS optic sight. */
 export class XRReticle {
   readonly group = new THREE.Group();
+  private hipfire = new THREE.Group();
+  private optic = new THREE.Group();
   private materials: THREE.MeshBasicMaterial[] = [];
   private hitUntil = 0;
   private hitKind: "hit" | "armor" | "kill" = "hit";
@@ -17,10 +20,12 @@ export class XRReticle {
   constructor(scene: THREE.Scene) {
     this.group.name = "XRCombatCrosshair";
     this.group.visible = false;
+    this.hipfire.name = "HipfireReticle";
+    this.optic.name = "AdsOpticSight";
 
-    const addBar = (width: number, height: number, x: number, y: number) => {
+    const addBar = (parent: THREE.Group, width: number, height: number, x: number, y: number, color = NORMAL_COLOR) => {
       const material = new THREE.MeshBasicMaterial({
-        color: NORMAL_COLOR,
+        color,
         transparent: true,
         opacity: 0.95,
         depthTest: false,
@@ -32,14 +37,14 @@ export class XRReticle {
       bar.position.set(x, y, 0);
       bar.renderOrder = 998;
       this.materials.push(material);
-      this.group.add(bar);
+      parent.add(bar);
     };
 
-    // Same visual language as the website: four separated posts.
-    addBar(0.042, 0.005, -0.047, 0);
-    addBar(0.042, 0.005, 0.047, 0);
-    addBar(0.005, 0.042, 0, 0.047);
-    addBar(0.005, 0.042, 0, -0.047);
+    // Hipfire: four separated posts + diamond (matches desktop).
+    addBar(this.hipfire, 0.042, 0.005, -0.047, 0);
+    addBar(this.hipfire, 0.042, 0.005, 0.047, 0);
+    addBar(this.hipfire, 0.005, 0.042, 0, 0.047);
+    addBar(this.hipfire, 0.005, 0.042, 0, -0.047);
 
     const centerMaterial = new THREE.MeshBasicMaterial({
       color: NORMAL_COLOR,
@@ -54,8 +59,52 @@ export class XRReticle {
     center.rotation.z = Math.PI / 4;
     center.renderOrder = 998;
     this.materials.push(centerMaterial);
-    this.group.add(center);
+    this.hipfire.add(center);
 
+    // ADS: compact combat optic — ring + cross + BDC dots.
+    const ringMat = new THREE.MeshBasicMaterial({
+      color: ADS_COLOR,
+      transparent: true,
+      opacity: 0.88,
+      depthTest: false,
+      depthWrite: false,
+      toneMapped: false,
+      side: THREE.DoubleSide,
+    });
+    const ring = new THREE.Mesh(new THREE.RingGeometry(0.055, 0.068, 48), ringMat);
+    ring.renderOrder = 998;
+    this.materials.push(ringMat);
+    this.optic.add(ring);
+
+    const innerMat = ringMat.clone();
+    innerMat.opacity = 0.45;
+    this.materials.push(innerMat);
+    const inner = new THREE.Mesh(new THREE.RingGeometry(0.018, 0.022, 32), innerMat);
+    inner.renderOrder = 998;
+    this.optic.add(inner);
+
+    addBar(this.optic, 0.0028, 0.11, 0, 0, ADS_COLOR);
+    addBar(this.optic, 0.11, 0.0028, 0, 0, ADS_COLOR);
+    addBar(this.optic, 0.012, 0.012, 0, 0, ADS_COLOR);
+
+    for (const y of [-0.028, -0.042, -0.056]) {
+      const dotMat = new THREE.MeshBasicMaterial({
+        color: ADS_COLOR,
+        transparent: true,
+        opacity: 0.8,
+        depthTest: false,
+        depthWrite: false,
+        toneMapped: false,
+      });
+      const dot = new THREE.Mesh(new THREE.CircleGeometry(0.0032, 10), dotMat);
+      dot.position.set(0, y, 0);
+      dot.renderOrder = 998;
+      this.materials.push(dotMat);
+      this.optic.add(dot);
+    }
+
+    this.optic.visible = false;
+    this.group.add(this.hipfire, this.optic);
     scene.add(this.group);
   }
 
@@ -69,16 +118,18 @@ export class XRReticle {
     this.hitKind = kind;
   }
 
-  update(pose: ShotPose | null, visible: boolean) {
+  update(pose: ShotPose | null, visible: boolean, ads = false) {
     if (!visible || !pose) {
       this.group.visible = false;
       return;
     }
 
     this.group.visible = true;
-    this.group.position.copy(pose.origin).addScaledVector(pose.direction, RETICLE_DISTANCE);
-    // Face back along the weapon ray so the reticle remains readable from the
-    // headset without becoming head-locked.
+    this.hipfire.visible = !ads;
+    this.optic.visible = ads;
+
+    const distance = ads ? 10.5 : RETICLE_DISTANCE;
+    this.group.position.copy(pose.origin).addScaledVector(pose.direction, distance);
     this.group.lookAt(pose.origin);
 
     const hit = performance.now() < this.hitUntil;
@@ -89,9 +140,14 @@ export class XRReticle {
           ? ARMOR_COLOR
           : hit
             ? HIT_COLOR
-            : NORMAL_COLOR;
-    for (const material of this.materials) material.color.setHex(color);
-    this.group.scale.setScalar(hit ? (this.hitKind === "kill" ? 1.45 : 1.25) : 1);
+            : ads
+              ? ADS_COLOR
+              : NORMAL_COLOR;
+    for (const material of this.materials) {
+      material.color.setHex(color);
+    }
+    const base = ads ? 0.92 : 1;
+    this.group.scale.setScalar(hit ? (this.hitKind === "kill" ? base * 1.4 : base * 1.2) : base);
   }
 
   dispose(scene: THREE.Scene) {

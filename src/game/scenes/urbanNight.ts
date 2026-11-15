@@ -169,11 +169,12 @@ export function buildUrbanNightScene(opts: SceneBuildOptions): CombatSceneSessio
   const wire = makeConcertinaWire(opts.mobile ? 8 : 10, opts.mobile ? 6 : 10);
   addVisual(ctx, wire, 0, 4.8, 20, 0);
 
+  // Keep lamps off the road centerline so FPS/VR spawn look isn't stabbed by a pole.
   const lampPositions: Array<[number, number]> = opts.mobile
     ? [
         [-4, 0],
         [4, -8],
-        [0, -16],
+        [-5, -16],
         [-6, 16],
         [6, 12],
       ]
@@ -182,10 +183,10 @@ export function buildUrbanNightScene(opts: SceneBuildOptions): CombatSceneSessio
         [4, -8],
         [-6, 16],
         [6, 12],
-        [0, -16],
+        [-5, -16],
         [-8, -12],
         [8, 8],
-        [0, 14],
+        [5, 14],
       ];
   lampPositions.forEach(([x, z]) => addStreetLamp(ctx, x, z, true));
 

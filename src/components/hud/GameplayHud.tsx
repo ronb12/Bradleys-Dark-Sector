@@ -19,6 +19,8 @@ export type GameplayHudData = {
   objective: string;
   intel: string;
   streak: number;
+  bestStreak: number;
+  sessionKills: number;
   medkits: number;
   missionTime: string;
   gameMode: GameMode;
@@ -53,7 +55,7 @@ type GameplayHudProps = {
 
 const panel =
   "overflow-hidden border border-[#87917b]/25 bg-[linear-gradient(135deg,rgba(13,18,15,.94),rgba(5,8,7,.82))] shadow-[0_12px_34px_rgba(0,0,0,.5),inset_0_1px_rgba(210,220,190,.04)] backdrop-blur-sm before:absolute before:left-0 before:top-0 before:h-px before:w-12 before:bg-[#b7c49a]/45 after:absolute after:bottom-0 after:right-0 after:h-px after:w-8 after:bg-[#c1a45b]/35";
-const label = "text-[8px] font-bold uppercase tracking-[0.22em] text-[#8f9988]";
+const label = "text-[10px] font-bold uppercase tracking-[0.16em] text-[#b1c4be]";
 
 function ModeSummary({ hud, pvpRoom, compact = false }: Pick<GameplayHudProps, "hud" | "pvpRoom"> & { compact?: boolean }) {
   if (hud.gameMode === "pvp") {
@@ -98,9 +100,18 @@ function ModeSummary({ hud, pvpRoom, compact = false }: Pick<GameplayHudProps, "
         <span className="text-[9px] font-bold uppercase tracking-wider text-amber-100/75">{hud.enemies} hostiles</span>
       </div>
       {!compact ? (
-        <div className="mt-1 text-[9px] uppercase tracking-[0.14em] text-slate-400">
-          {hud.missionTitle} · {hud.rank} · {hud.difficulty}
-        </div>
+        <>
+          <div className="mt-1 text-[9px] uppercase tracking-[0.14em] text-slate-400">
+            {hud.missionTitle} · {hud.rank} · {hud.difficulty}
+          </div>
+          <div className="mt-1.5 flex items-baseline gap-3 font-mono text-[10px]">
+            <span className="text-[#e5ead9]"><b className="text-sm text-white">{hud.score.toLocaleString()}</b> pts</span>
+            <span className={hud.streak >= 5 ? "text-orange-300" : hud.streak >= 3 ? "text-amber-200" : "text-slate-300"}>
+              ×{hud.streak} streak
+            </span>
+            <span className="text-rose-200/85">{hud.sessionKills} kills</span>
+          </div>
+        </>
       ) : null}
     </>
   );
@@ -110,7 +121,7 @@ function WeaponStatus({ hud, reduceMotion }: Pick<GameplayHudProps, "hud" | "red
   const reloading = hud.ammo === "RELOAD";
   const empty = hud.ammo === 0;
   return (
-    <div className={`${panel} relative min-w-[170px] max-w-[220px] border-r-2 border-r-[#b7c49a]/70 px-3 py-2.5 text-right`}>
+    <div className={`${panel} relative min-w-[194px] max-w-[248px] border-r-2 border-r-[#33ced5]/80 px-3 py-2.5 text-right`}>
       <div className="flex items-center justify-end gap-2">
         {hud.aiming ? <span className="border border-amber-200/35 px-1.5 py-0.5 text-[8px] font-black tracking-wider text-amber-100">ADS</span> : null}
         <span className={label}>{WEAPONS[hud.activeWeapon].name}</span>
@@ -122,9 +133,9 @@ function WeaponStatus({ hud, reduceMotion }: Pick<GameplayHudProps, "hud" | "red
         {!reloading ? <span className="pb-0.5 text-[9px] uppercase tracking-wider text-slate-500">in mag</span> : null}
       </div>
       <div className="mt-2 flex justify-end gap-3 font-mono text-[9px]">
-        <span className={hud.activeWeapon === "m4" ? "text-[#cbd6b4]" : "text-slate-500"}>1 · M4 {hud.m4Ammo}/30</span>
-        <span className={hud.activeWeapon === "smg" ? "text-[#cbd6b4]" : "text-slate-500"}>2 · VX9 {hud.smgAmmo}/36</span>
-        <span className={hud.activeWeapon === "pistol" ? "text-[#cbd6b4]" : "text-slate-500"}>3 · PST {hud.pistolAmmo}/15</span>
+        <span className={hud.activeWeapon === "m4" ? "text-[#c7f4f6]" : "text-slate-400"}>1 · {WEAPONS.m4.shortName} {hud.m4Ammo}/30</span>
+        <span className={hud.activeWeapon === "smg" ? "text-[#c7f4f6]" : "text-slate-400"}>2 · {WEAPONS.smg.shortName} {hud.smgAmmo}/36</span>
+        <span className={hud.activeWeapon === "pistol" ? "text-[#c7f4f6]" : "text-slate-400"}>3 · {WEAPONS.pistol.shortName} {hud.pistolAmmo}/15</span>
       </div>
       <div className="mt-1 text-[8px] uppercase tracking-[0.15em] text-slate-500">
         {reloading ? "Reloading — weapon unavailable" : `1 / 2 / 3 / Q · swap · G frag ×${hud.grenades}`}
@@ -166,26 +177,125 @@ function VitalStatus({ hud, reduceMotion }: Pick<GameplayHudProps, "hud" | "redu
   );
 }
 
-function PerformancePanel({ hud }: Pick<GameplayHudProps, "hud">) {
-  return (
-    <div className={`${panel} relative min-w-[160px] max-w-[240px] border-r-2 border-r-[#b7c49a]/55 px-3 py-2.5 text-right`}>
-      <div className="flex items-end justify-between gap-4">
-        <div className="min-w-0 text-left">
-          <div className={label}>{hud.gameMode === "range" ? "Course" : hud.gameMode === "pvp" ? "Combat" : "Performance"}</div>
-          <div className="mt-1 truncate font-mono text-[10px] text-slate-200" data-testid="range-score">
-            {hud.gameMode === "range"
-              ? `${hud.score} score · ${hud.rangeShots} shots`
-              : hud.gameMode === "pvp"
-                ? `${hud.kills} kills · ${hud.deaths} deaths`
-                : `${hud.score} score · ${hud.streak} streak`}
+function PerformancePanel({ hud, reduceMotion }: Pick<GameplayHudProps, "hud" | "reduceMotion">) {
+  const liveStreak = hud.streak;
+  const hot = liveStreak >= 3;
+  const onFire = liveStreak >= 5;
+  const unstoppable = liveStreak >= 8;
+  const streakLabel = unstoppable
+    ? "UNSTOPPABLE"
+    : onFire
+      ? "ON FIRE"
+      : hot
+        ? "HOT STREAK"
+        : liveStreak > 0
+          ? "STREAK"
+          : "READY";
+  const streakTone = unstoppable
+    ? "text-rose-300"
+    : onFire
+      ? "text-orange-300"
+      : hot
+        ? "text-amber-200"
+        : "text-[#d7dfc5]";
+
+  if (hud.gameMode === "range") {
+    return (
+      <div className={`${panel} relative min-w-[200px] max-w-[280px] border-r-2 border-r-emerald-300/55 px-3 py-2.5 text-right`}>
+        <div className="flex items-end justify-between gap-4">
+          <div className="min-w-0 text-left">
+            <div className={label}>Course score</div>
+            <div className="mt-0.5 font-mono text-3xl font-black leading-none text-emerald-100" data-testid="range-score">
+              {hud.score}
+            </div>
+            <div className="mt-1.5 flex gap-2.5 font-mono text-[9px] text-slate-300">
+              <span>{hud.rangeShots} shots</span>
+              <span>{hud.rangeAccuracy.toFixed(0)}% acc</span>
+            </div>
+            <div className="mt-0.5 text-[8px] uppercase tracking-wider text-slate-500">Best {hud.rangeBestScore}</div>
           </div>
-          <div className="mt-0.5 text-[8px] uppercase tracking-wider text-slate-500">
-            {hud.gameMode === "range" ? `Best ${hud.rangeBestScore}` : `Medkits ${hud.medkits} · Frags ${hud.grenades}`}
+          <div className="shrink-0 text-right">
+            <div className={label}>{hud.rangeChallengeActive ? "Challenge" : "Op timer"}</div>
+            <div className="mt-1 font-mono text-xl font-black leading-none text-[#d7dfc5]">{hud.missionTime}</div>
           </div>
         </div>
-        <div className="shrink-0">
-          <div className={label}>{hud.rangeChallengeActive ? "Challenge" : "Op timer"}</div>
+      </div>
+    );
+  }
+
+  if (hud.gameMode === "pvp") {
+    return (
+      <div className={`${panel} relative min-w-[200px] max-w-[280px] border-r-2 border-r-amber-200/55 px-3 py-2.5 text-right`}>
+        <div className="flex items-end justify-between gap-4">
+          <div className="min-w-0 text-left">
+            <div className={label}>Combat board</div>
+            <div className="mt-0.5 flex items-baseline gap-2 font-mono">
+              <span className="text-3xl font-black leading-none text-amber-100">{hud.kills}</span>
+              <span className="text-[10px] uppercase tracking-wider text-slate-500">kills</span>
+              <span className="text-xl font-black text-slate-400">{hud.deaths}</span>
+              <span className="text-[10px] uppercase tracking-wider text-slate-500">deaths</span>
+            </div>
+            <div className="mt-1.5 text-[8px] uppercase tracking-wider text-slate-500">
+              {hud.pvpPlayers} linked · streak {liveStreak}
+            </div>
+          </div>
+          <div className="shrink-0 text-right">
+            <div className={label}>Op timer</div>
+            <div className="mt-1 font-mono text-xl font-black leading-none text-[#d7dfc5]">{hud.missionTime}</div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className={`${panel} relative min-w-[220px] max-w-[300px] border-r-2 ${onFire ? "border-r-orange-400/70" : hot ? "border-r-amber-300/65" : "border-r-[#b7c49a]/55"} px-3 py-2.5 text-right`}
+      data-hud-zone="scoreboard"
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0 text-left">
+          <div className="flex items-center gap-2">
+            <span className={label}>Scoreboard</span>
+            <span
+              className={`text-[8px] font-black uppercase tracking-[0.16em] ${streakTone} ${onFire && !reduceMotion ? "animate-pulse" : ""}`}
+            >
+              {streakLabel}
+            </span>
+          </div>
+          <div className="mt-0.5 font-mono text-[2rem] font-black leading-none tracking-tight text-[#f2f5ea] drop-shadow-[0_1px_2px_#000]">
+            {hud.score.toLocaleString()}
+          </div>
+          <div className="mt-2 grid grid-cols-3 gap-2 font-mono text-[9px]">
+            <div>
+              <div className="text-[7px] uppercase tracking-wider text-slate-500">Streak</div>
+              <div className={`text-sm font-black ${streakTone}`}>{liveStreak}</div>
+            </div>
+            <div>
+              <div className="text-[7px] uppercase tracking-wider text-slate-500">Best</div>
+              <div className="text-sm font-black text-slate-200">{hud.bestStreak}</div>
+            </div>
+            <div>
+              <div className="text-[7px] uppercase tracking-wider text-slate-500">Kills</div>
+              <div className="text-sm font-black text-rose-200/90">{hud.sessionKills}</div>
+            </div>
+          </div>
+          <div className="mt-1.5 h-1 overflow-hidden bg-slate-800/90" aria-hidden>
+            <div
+              className={`h-full ${unstoppable ? "bg-rose-400" : onFire ? "bg-orange-400" : hot ? "bg-amber-300" : "bg-[#b7c49a]/70"}`}
+              style={{ width: `${Math.min(100, liveStreak * 12.5)}%` }}
+            />
+          </div>
+        </div>
+        <div className="shrink-0 text-right">
+          <div className={label}>Op timer</div>
           <div className="mt-1 font-mono text-xl font-black leading-none text-[#d7dfc5]">{hud.missionTime}</div>
+          <div className="mt-2 text-[8px] uppercase tracking-wider text-slate-500">
+            Wave {String(hud.wave).padStart(2, "0")} · {hud.enemies} live
+          </div>
+          <div className="mt-1 font-mono text-[8px] uppercase tracking-wider text-slate-500">
+            Med ×{hud.medkits} · Frag ×{hud.grenades}
+          </div>
         </div>
       </div>
     </div>
@@ -240,8 +350,16 @@ function MobileHud({ hud, pvpRoom, reduceMotion }: Omit<GameplayHudProps, "touch
             <span>{hud.missionTime}</span>
             {hud.gameMode === "range" ? (
               <span>{hud.rangeAccuracy.toFixed(0)}% ACC</span>
+            ) : hud.gameMode === "pvp" ? (
+              <span>{hud.kills}K / {hud.deaths}D</span>
             ) : (
-              <span>{hud.score} PTS</span>
+              <>
+                <span className="text-[#e5ead9]">{hud.score.toLocaleString()} PTS</span>
+                <span className={hud.streak >= 5 ? "text-orange-300" : hud.streak >= 3 ? "text-amber-200" : ""}>
+                  ×{hud.streak}
+                </span>
+                <span className="text-rose-200/80">{hud.sessionKills}K</span>
+              </>
             )}
             {hud.crouching ? <span className="text-[#cbd6b4]">CROUCH</span> : null}
           </div>
@@ -308,7 +426,7 @@ export function GameplayHud({ hud, pvpRoom, touchDevice, reduceMotion }: Gamepla
           <VitalStatus hud={hud} reduceMotion={reduceMotion} />
         </div>
         <div className="justify-self-end" data-hud-zone="performance">
-          <PerformancePanel hud={hud} />
+          <PerformancePanel hud={hud} reduceMotion={reduceMotion} />
         </div>
       </div>
     </div>

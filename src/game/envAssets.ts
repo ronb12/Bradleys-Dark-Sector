@@ -8,6 +8,8 @@ const ENV_MODEL_URLS = {
   jerrycan: "/models/env/metal_jerrycan_green.glb",
   compressor: "/models/env/old_military_compressor.glb",
   barrel: "/models/env/barrel_03.glb",
+  watchtower: "/models/env/quaternius-watchtower.glb",
+  rollershutterDoor: "/models/env/rollershutter_door.glb",
 } as const;
 
 type EnvAssetKey = keyof typeof ENV_MODEL_URLS;
@@ -192,9 +194,32 @@ export async function populateCompoundWithEnvironmentAssets(
     addAsset(root, colliders, templates, "jerrycan", 0.58, x, z, index * 0.6)
   );
 
+  // Background watchtower silhouettes, outside the perimeter wall (wall centers
+  // sit at COMPOUND_WALL=60, corner gameplay towers at ±54). These are purely
+  // decorative skyline dressing — the four functional corner watchtowers stay
+  // procedural because they carry tuned collision volumes and mounted
+  // floodlights that a static import would not reproduce.
+  const watchtowers: Array<[number, number, number]> = [
+    [-26, 78, 0.3],
+    [30, 82, -0.4],
+  ];
+  watchtowers.forEach(([x, z, rotation]) =>
+    addAsset(root, colliders, templates, "watchtower", 9.5, x, z, rotation)
+  );
+
+  // Salvaged roller doors leaning near existing crate clusters — freestanding
+  // dressing rather than mounted facades, so no warehouse-wall alignment risk.
+  const doors: Array<[number, number, number]> = [
+    [-29.5, -4.5, 0.55],
+    [42.5, -19.5, -0.35],
+  ];
+  doors.forEach(([x, z, rotation]) =>
+    addAsset(root, colliders, templates, "rollershutterDoor", 2.4, x, z, rotation)
+  );
+
   root.userData.loadedAssetUrls = Object.values(ENV_MODEL_URLS);
   root.userData.importedInstanceCount =
-    barriers.length + crates.length + ammoBoxes.length + 4 + 8 + 6;
+    barriers.length + crates.length + ammoBoxes.length + 4 + 8 + 6 + watchtowers.length + doors.length;
   return root;
 }
 
@@ -208,10 +233,15 @@ export async function populateShootingRangeWithEnvironmentAssets(
   const root = new THREE.Group();
   root.name = "ImportedRangeProps";
   rangeRoot.add(root);
-  addAsset(root, colliders, templates, "barrier", 3.25, -7.4, -5, Math.PI / 2);
-  addAsset(root, colliders, templates, "barrier", 3.25, 7.4, -5, Math.PI / 2);
-  addAsset(root, colliders, templates, "militaryCrate", 1.35, -7.5, 4.8, 0.2);
-  addAsset(root, colliders, templates, "ammoBox", 0.72, -6.8, 4.6, -0.15);
-  addAsset(root, colliders, templates, "barrel", 1.05, -8.1, -14, 0.4);
-  addAsset(root, colliders, templates, "jerrycan", 0.58, 8.1, -13.5, -0.3);
+  addAsset(root, colliders, templates, "barrier", 3.25, -14.5, -5, Math.PI / 2);
+  addAsset(root, colliders, templates, "barrier", 3.25, 14.5, -5, Math.PI / 2);
+  addAsset(root, colliders, templates, "barrier", 3.25, -14.5, -40, Math.PI / 2);
+  addAsset(root, colliders, templates, "barrier", 3.25, 14.5, -40, Math.PI / 2);
+  addAsset(root, colliders, templates, "militaryCrate", 1.35, -12.8, 6.2, 0.2);
+  addAsset(root, colliders, templates, "ammoBox", 0.72, -11.9, 6.0, -0.15);
+  addAsset(root, colliders, templates, "militaryCrate", 1.35, 12.5, 6.4, -0.25);
+  addAsset(root, colliders, templates, "barrel", 1.05, -15.2, -14, 0.4);
+  addAsset(root, colliders, templates, "barrel", 1.05, 15.2, -28, -0.2);
+  addAsset(root, colliders, templates, "jerrycan", 0.58, 14.8, -13.5, -0.3);
+  addAsset(root, colliders, templates, "ammoBox", 0.72, 6.4, 5.8, 0.1);
 }

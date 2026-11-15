@@ -219,24 +219,48 @@ function alignGripToOrigin(visual: THREE.Object3D, kind: EnemyWeaponKind) {
   const box = new THREE.Box3().setFromObject(visual);
   const size = box.getSize(new THREE.Vector3());
   if (!Number.isFinite(size.x) || size.x < 1e-4) {
-    // Fallback if geometry isn't ready yet.
     if (kind === "pistol") visual.position.set(0, 0.06, 0.02);
-    else visual.position.set(0, 0.11, -0.055);
+    else visual.position.set(0, 0.11, 0.02);
     return;
   }
 
-  // Grip sits below the receiver and slightly toward the stock (+Z), not at the
-  // mag tip (absolute bottom) and not at the bbox center.
+  // Grip sits below the receiver and toward the stock (+Z), not near the muzzle.
   const gripY =
     kind === "pistol"
       ? box.min.y + size.y * 0.32
-      : box.min.y + size.y * 0.34;
+      : box.min.y + size.y * 0.36;
   const gripZ =
     kind === "pistol"
-      ? box.min.z + size.z * 0.48
-      : box.min.z + size.z * 0.48;
+      ? box.min.z + size.z * 0.55
+      : box.min.z + size.z * 0.68;
   const gripX = (box.min.x + box.max.x) * 0.5;
   visual.position.set(-gripX, -gripY, -gripZ);
+}
+
+/**
+ * Wrist-follow mounts were showing Quaternius AKs stock-forward. Flip the
+ * visual 180° around Y and re-seat the grip so the barrel leads soldier -Z.
+ */
+function fixReversedRifleVisual(visual: THREE.Object3D, kind: EnemyWeaponKind) {
+  if (kind !== "ak47") return;
+  visual.rotation.y += Math.PI;
+  alignGripToOrigin(visual, kind);
+}
+
+function syncMuzzleToBarrelTip(primary: THREE.Object3D, visual: THREE.Object3D, kind: EnemyWeaponKind) {
+  const muzzle = primary.getObjectByName("WeaponMuzzle");
+  if (!muzzle) return;
+  visual.updateWorldMatrix(true, true);
+  primary.updateWorldMatrix(true, true);
+  const inv = primary.matrixWorld.clone().invert();
+  const worldBox = new THREE.Box3().setFromObject(visual);
+  const midY = (worldBox.min.y + worldBox.max.y) * 0.5;
+  const midX = (worldBox.min.x + worldBox.max.x) * 0.5;
+  const a = new THREE.Vector3(midX, midY, worldBox.min.z).applyMatrix4(inv);
+  const b = new THREE.Vector3(midX, midY, worldBox.max.z).applyMatrix4(inv);
+  // Muzzle = end farther along -Z (soldier / primary forward).
+  const tip = a.z < b.z ? a : b;
+  muzzle.position.set(0, kind === "pistol" ? 0.02 : 0.025, tip.z - Math.sign(tip.z || -1) * 0.02);
 }
 
 /** Mixamo RightHand local axes — grip in palm, muzzle roughly along fingers. */
@@ -256,24 +280,35 @@ function posePrimaryOnHand(primary: THREE.Object3D, kind: EnemyWeaponKind) {
  */
 function posePrimaryOnQuaterniusWrist(primary: THREE.Object3D, kind: EnemyWeaponKind) {
   if (kind === "pistol") {
-    primary.rotation.set(-0.06, 0, 0.015);
+    primary.rotation.set(-0.08, 0, 0.02);
   } else {
-    primary.rotation.set(-0.05, 0, 0.02);
+    // Keep rifle level with soldier -Z aim (Run_Shoot / Idle_Gun_Pointing).
+    primary.rotation.set(-0.04, 0, 0.015);
   }
 }
 
 const _wristWorld = new THREE.Vector3();
 const _gripLocal = new THREE.Vector3();
-const _gripOffset = new THREE.Vector3();
-const _visualWorld = new THREE.Vector3();
-const _soldierInv = new THREE.Matrix4();
-const _wristInSoldier = new THREE.Vector3();
-const _visualInSoldier = new THREE.Vector3();
+const _palmWorld = new THREE.Vector3();
+const _wristQuat = new THREE.Quaternion();
+const _palmBoneLocal = new THREE.Vector3();
+const _soldierQuat = new THREE.Quaternion();
+const _wristLocalQuat = new THREE.Quaternion();
+const _deltaQuat = new THREE.Quaternion();
 
 /**
- * Seat grip on WristR each frame without inheriting the bone's bind-pose twist
- * (which previously drove the mesh through the palm). Position follows the
- * animated wrist; rotation stays on the tuned soldier-local aim.
+ * Seat grip on WristR/HandR each frame without inheriting bind-pose twist.
+ * Palm offset is applied in the bone's world orientation so the rifle stays
+ * in the fist as the arm animates (soldier-space offsets floated the gun away).
+ *
+ * Rotation follows the delta the wrist has swung through since attach time
+ * (soldier-local, relative to a captured baseline), composed onto the tuned
+ * aim pose — not the wrist's raw orientation. Adopting the raw bone
+ * quaternion directly (literal bone-parenting) previously inherited
+ * bind-pose twist and spiked the barrel through the palm; tracking a delta
+ * from a captured baseline keeps the tuned aim pose as neutral while still
+ * letting the gun swing through run/walk gaits instead of staying frozen at
+ * the aim pose while only its position followed the hand.
  */
 export function syncEnemyWeaponGrip(soldier: THREE.Group) {
   if (soldier.userData.weaponAttachmentMode !== "wrist-follow") return;
@@ -284,38 +319,36 @@ export function syncEnemyWeaponGrip(soldier: THREE.Group) {
   const wrist = findNamedBone(soldier, boneName);
   if (!wrist) return;
 
+  const weaponKind = (soldier.userData.enemyWeapon as EnemyWeaponKind | undefined) || "ak47";
   const fine = soldier.userData.weaponGripFineOffset as THREE.Vector3 | undefined;
-  if (fine) _gripOffset.copy(fine);
-  else _gripOffset.set(0, 0, 0);
-
-  // Calibrate once the gun-ready clip is playing — attach runs before playAnimation.
-  if (!soldier.userData.weaponGripCalibrated) {
-    const visual = soldier.getObjectByName("EnemyWeaponVisual");
-    if (visual) {
-      soldier.updateMatrixWorld(true);
-      wrist.getWorldPosition(_wristWorld);
-      visual.getWorldPosition(_visualWorld);
-      _soldierInv.copy(soldier.matrixWorld).invert();
-      _wristInSoldier.copy(_wristWorld).applyMatrix4(_soldierInv);
-      _visualInSoldier.copy(_visualWorld).applyMatrix4(_soldierInv);
-      _gripOffset.add(_wristInSoldier.sub(_visualInSoldier));
-      if (!soldier.userData.weaponGripFineOffset) {
-        soldier.userData.weaponGripFineOffset = _gripOffset.clone();
-      } else {
-        soldier.userData.weaponGripFineOffset.copy(_gripOffset);
-      }
-      soldier.userData.weaponGripCalibrated = true;
-      // Palm center sits slightly above the wrist bone — lift grip into the fist.
-      const weaponKind = soldier.userData.enemyWeapon as EnemyWeaponKind | undefined;
-      soldier.userData.weaponGripFineOffset.y += weaponKind === "pistol" ? 0.022 : 0.028;
-    }
+  // Bone-local palm: +X into fingers-ish, +Y toward palm center for Quaternius WristR.
+  if (fine) _palmBoneLocal.copy(fine);
+  else {
+    _palmBoneLocal.set(
+      weaponKind === "pistol" ? 0.01 : 0.012,
+      weaponKind === "pistol" ? 0.045 : 0.055,
+      weaponKind === "pistol" ? 0.02 : 0.028,
+    );
   }
 
+  wrist.updateWorldMatrix(true, false);
   wrist.getWorldPosition(_wristWorld);
+  wrist.getWorldQuaternion(_wristQuat);
+  _palmWorld.copy(_palmBoneLocal).applyQuaternion(_wristQuat).add(_wristWorld);
+
   soldier.updateMatrixWorld(true);
-  _gripLocal.copy(_wristWorld);
+  _gripLocal.copy(_palmWorld);
   soldier.worldToLocal(_gripLocal);
-  primary.position.copy(_gripLocal).add(_gripOffset);
+  primary.position.copy(_gripLocal);
+
+  const baseWristLocalQuat = soldier.userData.weaponGripBaseWristLocalQuat as THREE.Quaternion | undefined;
+  const baseAimQuat = soldier.userData.weaponGripBaseAimQuat as THREE.Quaternion | undefined;
+  if (baseWristLocalQuat && baseAimQuat) {
+    soldier.getWorldQuaternion(_soldierQuat);
+    _wristLocalQuat.copy(_soldierQuat).invert().multiply(_wristQuat);
+    _deltaQuat.copy(baseWristLocalQuat).invert().premultiply(_wristLocalQuat);
+    primary.quaternion.copy(_deltaQuat).multiply(baseAimQuat);
+  }
 }
 
 export function attachEnemyWeapon(soldier: THREE.Group, kind: EnemyWeaponKind = "ak47") {
@@ -358,29 +391,44 @@ export function attachEnemyWeapon(soldier: THREE.Group, kind: EnemyWeaponKind = 
         // barrel through the palm. Track wrist world position each frame but
         // keep a stable soldier-local aim aligned with idle_gun / run_shoot clips.
         alignGripToOrigin(weaponVisual, kind);
+        fixReversedRifleVisual(weaponVisual, kind);
         if (kind === "pistol") weaponVisual.scale.multiplyScalar(1.05);
         posePrimaryOnQuaterniusWrist(primary, kind);
+        // Captured once as the tuned "neutral" aim pose — syncEnemyWeaponGrip
+        // composes the wrist's rotation delta since attach onto this each frame.
+        soldier.userData.weaponGripBaseAimQuat = primary.quaternion.clone();
         kit.add(primary);
         soldier.add(kit);
         soldier.updateMatrixWorld(true);
         const wristLocal = new THREE.Vector3();
         rightHand.getWorldPosition(wristLocal);
         soldier.worldToLocal(wristLocal);
-        // Nudge grip into palm (bone sits at wrist joint, not palm center).
+        // Bone-local palm offset — syncEnemyWeaponGrip applies wrist orientation.
         soldier.userData.weaponGripFineOffset = new THREE.Vector3(
-          kind === "pistol" ? 0.008 : 0.006,
-          kind === "pistol" ? -0.012 : -0.016,
-          kind === "pistol" ? 0.018 : 0.024
+          kind === "pistol" ? 0.01 : 0.014,
+          kind === "pistol" ? 0.048 : 0.058,
+          kind === "pistol" ? 0.016 : 0.022,
         );
-        primary.position.copy(wristLocal).add(soldier.userData.weaponGripFineOffset);
+        primary.position.copy(wristLocal);
+        {
+          // Baseline wrist orientation, in soldier-local space, at attach time —
+          // syncEnemyWeaponGrip tracks how far the wrist has rotated from this.
+          const wristWorldQuat = new THREE.Quaternion();
+          rightHand.getWorldQuaternion(wristWorldQuat);
+          const soldierWorldQuat = new THREE.Quaternion();
+          soldier.getWorldQuaternion(soldierWorldQuat);
+          soldier.userData.weaponGripBaseWristLocalQuat = soldierWorldQuat.invert().multiply(wristWorldQuat);
+        }
         fitHeldWeaponWorldSize(kit, primary, kind === "pistol" ? 0.32 : 1.05);
-        soldier.userData.weaponGripCalibrated = false;
+        soldier.userData.weaponGripCalibrated = true;
         soldier.userData.weaponBoneAttached = false;
         soldier.userData.weaponAttachmentMode = "wrist-follow";
         soldier.userData.weaponHandBone = rightHand.name;
         soldier.userData.weaponBoneIsSkeleton = rightHand instanceof THREE.Bone;
+        syncEnemyWeaponGrip(soldier);
       } else {
         alignGripToOrigin(weaponVisual, kind);
+        fixReversedRifleVisual(weaponVisual, kind);
         if (kind === "pistol") weaponVisual.scale.multiplyScalar(1.05);
         posePrimaryOnHand(primary, kind);
         rightHand.add(kit);
@@ -415,6 +463,8 @@ export function attachEnemyWeapon(soldier: THREE.Group, kind: EnemyWeaponKind = 
     }
 
     const muzzle = addMuzzleMarker(primary, kind);
+    if (isRigged) syncMuzzleToBarrelTip(primary, weaponVisual, kind);
+    void muzzle;
 
     if (kind === "ak47") {
       const sidearm = pistolTemplate ? pistolTemplate.clone(true) : makeProceduralPistol();

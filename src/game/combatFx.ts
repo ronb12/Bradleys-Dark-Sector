@@ -22,11 +22,11 @@ const _tracerForward = new THREE.Vector3(0, 0, 1);
 const _tracerDir = new THREE.Vector3();
 
 const TRACER_POOL_MAX = 48;
-const ACTIVE_PARTICLE_BUDGET = 32;
-const ACTIVE_DECAL_BUDGET = 40;
+const ACTIVE_PARTICLE_BUDGET = 48;
+const ACTIVE_DECAL_BUDGET = 56;
 const ACTIVE_CASING_BUDGET = 24;
-const ACTIVE_GIB_BUDGET = 18;
-const ACTIVE_BLOOD_POOL_BUDGET = 14;
+const ACTIVE_GIB_BUDGET = 28;
+const ACTIVE_BLOOD_POOL_BUDGET = 22;
 const tracerPool: THREE.Mesh[] = [];
 
 let streakGeoXr: THREE.BufferGeometry | null = null;
@@ -38,7 +38,7 @@ let casingGeo: THREE.BufferGeometry | null = null;
 let gibGeo: THREE.BoxGeometry | null = null;
 
 function getGibGeo() {
-  if (!gibGeo) gibGeo = new THREE.BoxGeometry(0.06, 0.04, 0.05);
+  if (!gibGeo) gibGeo = new THREE.BoxGeometry(0.08, 0.055, 0.065);
   return gibGeo;
 }
 
@@ -329,10 +329,10 @@ function directionalBloodPoints(
     velocities.push(
       direction
         .clone()
-        .multiplyScalar(1.5 + Math.random() * (2.4 + quality * 2.2))
-        .addScaledVector(tangent, (Math.random() - 0.5) * 1.7)
-        .addScaledVector(bitangent, (Math.random() - 0.5) * 1.7)
-        .add(new THREE.Vector3(0, 0.4 + Math.random() * 1.1, 0)),
+        .multiplyScalar(1.85 + Math.random() * (3.1 + quality * 2.8))
+        .addScaledVector(tangent, (Math.random() - 0.5) * 2.1)
+        .addScaledVector(bitangent, (Math.random() - 0.5) * 2.1)
+        .add(new THREE.Vector3(0, 0.55 + Math.random() * 1.45, 0)),
     );
   }
   const geo = new THREE.BufferGeometry();
@@ -340,15 +340,15 @@ function directionalBloodPoints(
   const material = new THREE.PointsMaterial({
     map: getSoftParticleMap(),
     color: 0x6f0608,
-    size: quality < 0.4 ? 0.045 : 0.065,
+    size: quality < 0.4 ? 0.055 : 0.085,
     transparent: true,
-    opacity: 0.95,
+    opacity: 0.98,
     depthWrite: false,
     sizeAttenuation: true,
     alphaTest: 0.02,
   });
   const points = new THREE.Points(geo, material);
-  points.userData = { velocities, life: 0.55, maxLife: 0.55 };
+  points.userData = { velocities, life: 0.72, maxLife: 0.72 };
   return points;
 }
 
@@ -383,17 +383,17 @@ function bloodMistPoints(
   geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
   const material = new THREE.PointsMaterial({
     map: getSoftParticleMap(),
-    color: 0xa01820,
-    size: quality < 0.4 ? 0.035 : 0.052,
+    color: 0xb01822,
+    size: quality < 0.4 ? 0.042 : 0.068,
     transparent: true,
-    opacity: 0.72,
+    opacity: 0.82,
     depthWrite: false,
     sizeAttenuation: true,
     alphaTest: 0.02,
     blending: THREE.AdditiveBlending,
   });
   const points = new THREE.Points(geo, material);
-  points.userData = { velocities, life: 0.85, maxLife: 0.85 };
+  points.userData = { velocities, life: 1.05, maxLife: 1.05 };
   return points;
 }
 
@@ -405,23 +405,23 @@ function spawnBloodSpurtDecals(
 ) {
   const scale = Math.max(0.2, Math.min(1, quality));
   const dir = outward.clone().normalize();
-  const count = scale >= 0.55 ? 2 : scale >= 0.3 ? 1 : 0;
+  const count = scale >= 0.55 ? 4 : scale >= 0.3 ? 2 : 1;
   for (let i = 0; i < count; i += 1) {
     const spurt = new THREE.Mesh(
-      new THREE.CircleGeometry(0.035 + Math.random() * 0.045, 6),
+      new THREE.CircleGeometry(0.045 + Math.random() * 0.06, 7),
       new THREE.MeshBasicMaterial({
-        color: i === 0 ? 0x4a0607 : 0x6a0a0b,
+        color: i === 0 ? 0x4a0607 : 0x7a0c0e,
         transparent: true,
-        opacity: 0.88,
+        opacity: 0.92,
         depthWrite: false,
         side: THREE.DoubleSide,
       }),
     );
-    spurt.position.copy(point).addScaledVector(dir, 0.03 + i * 0.055);
+    spurt.position.copy(point).addScaledVector(dir, 0.03 + i * 0.06);
     spurt.lookAt(spurt.position.clone().add(dir));
-    spurt.scale.set(0.45 + Math.random() * 0.35, 1.1 + Math.random() * 1.6, 1);
+    spurt.scale.set(0.55 + Math.random() * 0.55, 1.35 + Math.random() * 2.1, 1);
     spurt.rotation.z = Math.random() * Math.PI;
-    spurt.userData.life = 7 + Math.random() * 3;
+    spurt.userData.life = 9 + Math.random() * 4;
     fx.group.add(spurt);
     fx.decals.push(spurt);
   }
@@ -434,7 +434,7 @@ function spawnGibChunks(
   quality: FxQuality,
 ) {
   const scale = Math.max(0.2, Math.min(1, quality));
-  const count = Math.max(2, Math.round((scale >= 0.65 ? 7 : 4) * scale));
+  const count = Math.max(3, Math.round((scale >= 0.65 ? 11 : 7) * scale));
   const dir = outward.clone().normalize();
   for (let i = 0; i < count; i += 1) {
     const gib = new THREE.Mesh(
@@ -442,24 +442,24 @@ function spawnGibChunks(
       new THREE.MeshBasicMaterial({
         color: Math.random() < 0.45 ? 0x3a0606 : 0x5c0c0c,
         transparent: true,
-        opacity: 0.94,
+        opacity: 0.96,
         depthWrite: false,
       }),
     );
     gib.position
       .copy(origin)
-      .add(new THREE.Vector3((Math.random() - 0.5) * 0.12, (Math.random() - 0.5) * 0.1, (Math.random() - 0.5) * 0.12));
+      .add(new THREE.Vector3((Math.random() - 0.5) * 0.16, (Math.random() - 0.5) * 0.14, (Math.random() - 0.5) * 0.16));
     const velocity = dir
       .clone()
-      .multiplyScalar(1.8 + Math.random() * (2.6 + scale * 2.4))
-      .add(new THREE.Vector3((Math.random() - 0.5) * 2.2, 0.6 + Math.random() * 2.4, (Math.random() - 0.5) * 2.2));
+      .multiplyScalar(2.2 + Math.random() * (3.4 + scale * 3.0))
+      .add(new THREE.Vector3((Math.random() - 0.5) * 2.8, 0.85 + Math.random() * 3.0, (Math.random() - 0.5) * 2.8));
     gib.userData = {
       velocity,
-      life: 0.75 + Math.random() * 0.55,
-      maxLife: 1.3,
-      spin: new THREE.Vector3((Math.random() - 0.5) * 14, (Math.random() - 0.5) * 14, (Math.random() - 0.5) * 14),
+      life: 0.95 + Math.random() * 0.7,
+      maxLife: 1.65,
+      spin: new THREE.Vector3((Math.random() - 0.5) * 18, (Math.random() - 0.5) * 18, (Math.random() - 0.5) * 18),
     };
-    gib.scale.setScalar(0.65 + Math.random() * 0.85);
+    gib.scale.setScalar(0.75 + Math.random() * 1.15);
     fx.group.add(gib);
     fx.gibs.push(gib);
   }
@@ -473,30 +473,56 @@ export function spawnGroundBloodPool(
   quality: FxQuality = 1,
 ) {
   const scale = Math.max(0.2, Math.min(1, quality));
-  if (scale < 0.22) return;
-  const radius = (0.28 + Math.random() * 0.22) * intensity * (0.55 + scale * 0.45);
+  if (scale < 0.18) return;
+  const radius = (0.36 + Math.random() * 0.32) * intensity * (0.6 + scale * 0.5);
   const pool = new THREE.Mesh(
-    new THREE.CircleGeometry(radius, 8),
+    new THREE.CircleGeometry(radius, 10),
     new THREE.MeshBasicMaterial({
-      color: 0x240303,
+      color: 0x1c0202,
       transparent: true,
-      opacity: 0.5 + scale * 0.22,
+      opacity: 0.58 + scale * 0.28,
       depthWrite: false,
       side: THREE.DoubleSide,
     }),
   );
   pool.rotation.x = -Math.PI / 2;
   pool.position.set(point.x, 0.014 + Math.random() * 0.01, point.z);
-  pool.userData.life = 16 + Math.random() * 10;
+  pool.userData.life = 22 + Math.random() * 14;
   pool.userData.maxLife = pool.userData.life;
-  pool.userData.grow = 0.28;
-  pool.scale.setScalar(0.12);
+  pool.userData.grow = 0.34;
+  pool.scale.setScalar(0.1);
   fx.group.add(pool);
   fx.bloodPools.push(pool);
+
+  // Secondary irregular drip smear beside the main pool.
+  if (scale >= 0.35 && Math.random() < 0.7) {
+    const drip = new THREE.Mesh(
+      new THREE.CircleGeometry(radius * (0.35 + Math.random() * 0.25), 7),
+      new THREE.MeshBasicMaterial({
+        color: 0x2a0404,
+        transparent: true,
+        opacity: 0.5 + scale * 0.2,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+      }),
+    );
+    drip.rotation.x = -Math.PI / 2;
+    drip.position.set(
+      point.x + (Math.random() - 0.5) * 0.45,
+      0.013,
+      point.z + (Math.random() - 0.5) * 0.45,
+    );
+    drip.scale.set(0.7 + Math.random() * 0.8, 1.2 + Math.random(), 1);
+    drip.userData.life = 18 + Math.random() * 10;
+    drip.userData.maxLife = drip.userData.life;
+    drip.userData.grow = 0.2;
+    fx.group.add(drip);
+    fx.bloodPools.push(drip);
+  }
   trimFxBudget(fx);
 }
 
-/** Kill burst: spray, mist, gibs, and a ground pool — scaled by quality / fxScale. */
+/** Kill burst: spray, mist, gibs, arterial jet, and ground pools — scaled by quality. */
 export function spawnFleshDeathGore(
   fx: CombatFxState,
   point: THREE.Vector3,
@@ -505,35 +531,63 @@ export function spawnFleshDeathGore(
 ) {
   const scale = Math.max(0.2, Math.min(1, quality));
   const outward = shotDirection.clone().normalize();
-  spawnGroundBloodPool(fx, point, 1.05 + scale * 0.55, scale);
-  if (scale < 0.25) return;
+  spawnGroundBloodPool(fx, point, 1.35 + scale * 0.75, scale);
+  if (scale < 0.22) return;
 
   const burst = directionalBloodPoints(
     point.clone().addScaledVector(outward, 0.04),
     outward,
-    Math.max(8, Math.round(26 * scale)),
+    Math.max(12, Math.round(38 * scale)),
     scale,
   );
-  (burst.material as THREE.PointsMaterial).size = 0.07 + scale * 0.045;
+  (burst.material as THREE.PointsMaterial).size = 0.085 + scale * 0.055;
   fx.group.add(burst);
   fx.particles.push(burst);
 
-  const mist = bloodMistPoints(point, outward, Math.max(4, Math.round(14 * scale)), scale);
+  // Reverse exit spray — sells through-and-through without physics.
+  const exit = directionalBloodPoints(
+    point.clone().addScaledVector(outward, -0.08),
+    outward.clone().multiplyScalar(-1),
+    Math.max(6, Math.round(16 * scale)),
+    scale,
+  );
+  (exit.material as THREE.PointsMaterial).size = 0.06 + scale * 0.03;
+  fx.group.add(exit);
+  fx.particles.push(exit);
+
+  const mist = bloodMistPoints(point, outward, Math.max(8, Math.round(22 * scale)), scale);
   fx.group.add(mist);
   fx.particles.push(mist);
 
-  if (scale >= 0.32) spawnGibChunks(fx, point, outward, scale);
+  // Arterial jet — short upward plume for kill readability.
+  if (scale >= 0.28) {
+    const arterial = bloodMistPoints(
+      point.clone().add(new THREE.Vector3(0, 0.12, 0)),
+      new THREE.Vector3(outward.x * 0.35, 1, outward.z * 0.35),
+      Math.max(5, Math.round(12 * scale)),
+      scale,
+    );
+    (arterial.material as THREE.PointsMaterial).color.setHex(0xd02028);
+    (arterial.material as THREE.PointsMaterial).size = 0.07;
+    arterial.userData.life = 0.7;
+    arterial.userData.maxLife = 0.7;
+    fx.group.add(arterial);
+    fx.particles.push(arterial);
+  }
+
+  if (scale >= 0.28) spawnGibChunks(fx, point, outward, scale);
   spawnBloodSpurtDecals(fx, point, outward, scale);
   trimFxBudget(fx);
 }
 
-/** Cheap wet-blood emissive + color lerp on enemy meshes. */
+/** Cheap wet-blood emissive + accumulating stain on enemy meshes. */
 export function applyEnemyBloodFlash(enemy: THREE.Object3D, kind: "hit" | "kill" = "hit") {
-  const emissiveHex = kind === "kill" ? 0xa01018 : 0x7a0e14;
-  const emissiveBoost = kind === "kill" ? 0.58 : 0.44;
-  const wetLerp = kind === "kill" ? 0.42 : 0.3;
-  const duration = kind === "kill" ? 155 : 95;
-  const wetColor = new THREE.Color(0x4a0808);
+  const emissiveHex = kind === "kill" ? 0xc0141c : 0x8a1018;
+  const emissiveBoost = kind === "kill" ? 0.72 : 0.52;
+  const wetLerp = kind === "kill" ? 0.55 : 0.38;
+  const duration = kind === "kill" ? 220 : 110;
+  const wetColor = new THREE.Color(0x3a0606);
+  const stainPersist = kind === "kill" ? 0.28 : 0.12;
   enemy.traverse((child) => {
     if (!(child instanceof THREE.Mesh) || !(child.material instanceof THREE.MeshStandardMaterial)) return;
     const mat = child.material;
@@ -541,13 +595,18 @@ export function applyEnemyBloodFlash(enemy: THREE.Object3D, kind: "hit" | "kill"
     const baseIntensity =
       typeof mat.userData.baseEmissiveIntensity === "number" ? mat.userData.baseEmissiveIntensity : 0;
     if (typeof mat.userData.baseColorHex !== "number") mat.userData.baseColorHex = mat.color.getHex();
+    if (typeof mat.userData.bloodStain !== "number") mat.userData.bloodStain = 0;
+    mat.userData.bloodStain = Math.min(0.62, (mat.userData.bloodStain as number) + stainPersist);
     mat.emissive.setHex(emissiveHex);
     mat.emissiveIntensity = Math.max(emissiveBoost, baseIntensity);
     mat.color.lerp(wetColor, wetLerp);
+    const stain = mat.userData.bloodStain as number;
     window.setTimeout(() => {
       mat.emissive.setHex(baseHex);
       mat.emissiveIntensity = baseIntensity;
-      mat.color.setHex(mat.userData.baseColorHex as number);
+      const restored = new THREE.Color(mat.userData.baseColorHex as number);
+      restored.lerp(wetColor, stain);
+      mat.color.copy(restored);
     }, duration);
   });
 }
@@ -606,7 +665,7 @@ export function spawnBulletImpact(
     const blood = directionalBloodPoints(
       point.clone().addScaledVector(normal, 0.035),
       normal,
-      Math.max(6, Math.round(18 * scale)),
+      Math.max(10, Math.round(26 * scale)),
       scale,
     );
     fx.group.add(blood);
@@ -615,7 +674,7 @@ export function spawnBulletImpact(
     const mist = bloodMistPoints(
       point.clone().addScaledVector(normal, 0.02),
       normal,
-      Math.max(3, Math.round(10 * scale)),
+      Math.max(5, Math.round(16 * scale)),
       scale,
     );
     fx.group.add(mist);
@@ -623,20 +682,20 @@ export function spawnBulletImpact(
 
     spawnBloodSpurtDecals(fx, point, normal, scale);
 
-    if (scale >= 0.38 && Math.random() < 0.42) {
-      spawnGroundBloodPool(fx, point, 0.32 + Math.random() * 0.18, scale);
+    if (scale >= 0.3 && Math.random() < 0.72) {
+      spawnGroundBloodPool(fx, point, 0.45 + Math.random() * 0.28, scale);
     }
 
     // Layer several irregular wound/splatter marks around the entry point.
-    const splatterCount = scale >= 0.55 ? 3 : scale >= 0.3 ? 2 : 1;
+    const splatterCount = scale >= 0.55 ? 5 : scale >= 0.3 ? 3 : 2;
     for (let i = 0; i < splatterCount; i += 1) {
-      const radius = 0.045 + Math.random() * (0.07 + scale * 0.06);
+      const radius = 0.05 + Math.random() * (0.09 + scale * 0.08);
       const splatter = new THREE.Mesh(
         new THREE.CircleGeometry(radius, 7),
         new THREE.MeshBasicMaterial({
           color: i === 0 ? 0x350305 : 0x5a0708,
           transparent: true,
-          opacity: 0.82,
+          opacity: 0.88,
           depthWrite: false,
           side: THREE.DoubleSide,
         }),
@@ -645,14 +704,14 @@ export function spawnBulletImpact(
         .copy(point)
         .addScaledVector(normal, 0.025 + i * 0.004)
         .add(new THREE.Vector3(
-          (Math.random() - 0.5) * 0.13,
-          (Math.random() - 0.5) * 0.13,
-          (Math.random() - 0.5) * 0.13,
+          (Math.random() - 0.5) * 0.18,
+          (Math.random() - 0.5) * 0.18,
+          (Math.random() - 0.5) * 0.18,
         ));
       splatter.lookAt(splatter.position.clone().add(normal));
-      splatter.scale.set(0.65 + Math.random() * 0.9, 0.45 + Math.random() * 1.4, 1);
+      splatter.scale.set(0.7 + Math.random() * 1.1, 0.5 + Math.random() * 1.7, 1);
       splatter.rotation.z = Math.random() * Math.PI;
-      splatter.userData.life = 10;
+      splatter.userData.life = 14;
       fx.group.add(splatter);
       fx.decals.push(splatter);
     }
@@ -933,6 +992,48 @@ export function spawnAmbientImpactSpark(
   sparks.userData.maxLife = 0.35;
   sparks.userData.velocities = velocities;
   sparks.position.set(0, 0, 0);
+  fx.group.add(sparks);
+  fx.particles.push(sparks);
+}
+
+/** Short colored spark burst when collecting a supply crate. */
+export function spawnPickupBurst(
+  fx: CombatFxState,
+  point: THREE.Vector3,
+  color: number,
+  quality: FxQuality,
+) {
+  if (quality < 0.18 || fx.particles.length >= ACTIVE_PARTICLE_BUDGET) return;
+  const count = quality < 0.45 ? 8 : 14;
+  const positions = new Float32Array(count * 3);
+  const velocities: THREE.Vector3[] = [];
+  for (let i = 0; i < count; i += 1) {
+    positions[i * 3] = point.x + (Math.random() - 0.5) * 0.12;
+    positions[i * 3 + 1] = point.y + 0.15 + Math.random() * 0.2;
+    positions[i * 3 + 2] = point.z + (Math.random() - 0.5) * 0.12;
+    const yaw = Math.random() * Math.PI * 2;
+    const speed = 1.6 + Math.random() * 2.8;
+    velocities.push(
+      new THREE.Vector3(Math.cos(yaw) * speed, 2.2 + Math.random() * 2.6, Math.sin(yaw) * speed),
+    );
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  const sparks = new THREE.Points(
+    geo,
+    new THREE.PointsMaterial({
+      map: getSoftParticleMap(),
+      color,
+      size: 0.07,
+      transparent: true,
+      opacity: 0.9,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    }),
+  );
+  sparks.userData.life = 0.45;
+  sparks.userData.maxLife = 0.45;
+  sparks.userData.velocities = velocities;
   fx.group.add(sparks);
   fx.particles.push(sparks);
 }

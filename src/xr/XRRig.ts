@@ -29,10 +29,23 @@ export class XRRig {
     this.attached = true;
   }
 
-  exitSession(camera: THREE.PerspectiveCamera, scene: THREE.Scene) {
+  exitSession(
+    camera: THREE.PerspectiveCamera,
+    scene: THREE.Scene,
+    restore?: { position: THREE.Vector3; yaw: number; pitch: number; eyeHeight?: number },
+  ) {
     if (!this.attached) return;
     scene.add(camera);
     this.attached = false;
+    // WebXR left the camera at local identity under the rig — restore FPS pose so
+    // desktop/mobile doesn't flash a black/wrong view for a frame after Exit VR.
+    if (restore) {
+      const eye = restore.eyeHeight ?? 1.95;
+      camera.position.set(restore.position.x, restore.position.y + eye, restore.position.z);
+      camera.rotation.set(restore.pitch, restore.yaw, 0, "YXZ");
+      camera.scale.set(1, 1, 1);
+      camera.updateMatrixWorld(true);
+    }
   }
 
   /** Sync rig feet to gameplay player position + yaw. */

@@ -13,7 +13,33 @@ function makePanelTexture(width: number, height: number) {
   return { canvas, ctx, texture };
 }
 
-/** Wrist / body-locked tactical HUD for immersive VR. */
+function roundRect(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  r: number,
+) {
+  const radius = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + radius, y);
+  ctx.arcTo(x + w, y, x + w, y + h, radius);
+  ctx.arcTo(x + w, y + h, x, y + h, radius);
+  ctx.arcTo(x, y + h, x, y, radius);
+  ctx.arcTo(x, y, x + w, y, radius);
+  ctx.closePath();
+}
+
+function streakMeta(streak: number) {
+  if (streak >= 8) return { label: "UNSTOPPABLE", color: "#fda4af", bar: "#f43f5e" };
+  if (streak >= 5) return { label: "ON FIRE", color: "#fdba74", bar: "#fb923c" };
+  if (streak >= 3) return { label: "HOT STREAK", color: "#fde68a", bar: "#fbbf24" };
+  if (streak > 0) return { label: "STREAK", color: "#d7dfc5", bar: "#a3b18a" };
+  return { label: "READY", color: "#94a3b8", bar: "#475569" };
+}
+
+/** Wrist / body-locked tactical HUD for immersive VR — scoreboard-forward layout. */
 export class XRHud {
   readonly group = new THREE.Group();
   private panel: THREE.Mesh;
@@ -24,7 +50,7 @@ export class XRHud {
 
   constructor(scene: THREE.Scene) {
     this.group.name = "XRHud";
-    const made = makePanelTexture(768, 384);
+    const made = makePanelTexture(1120, 560);
     this.canvas = made.canvas;
     this.ctx = made.ctx;
     this.texture = made.texture;
@@ -32,14 +58,17 @@ export class XRHud {
     const mat = new THREE.MeshBasicMaterial({
       map: this.texture,
       transparent: true,
-      opacity: 0.92,
+      opacity: 0.96,
       depthWrite: false,
+      depthTest: false,
       side: THREE.DoubleSide,
+      toneMapped: false,
     });
-    this.panel = new THREE.Mesh(new THREE.PlaneGeometry(0.42, 0.21), mat);
-    // Slight local tilt for readability; group itself stays yaw-only / world-upright.
+    // Slightly larger panel — score digits stay readable at arm's length on Quest.
+    this.panel = new THREE.Mesh(new THREE.PlaneGeometry(0.58, 0.29), mat);
     this.panel.position.set(0, 0, 0);
-    this.panel.rotation.set(-0.2, 0.15, 0);
+    this.panel.rotation.set(-0.18, 0.12, 0);
+    this.panel.renderOrder = 990;
     this.group.add(this.panel);
     this.group.visible = false;
     scene.add(this.group);
@@ -49,6 +78,10 @@ export class XRHud {
       ammo: 30,
       weapon: "M4A1",
       score: 0,
+      streak: 0,
+      bestStreak: 0,
+      sessionKills: 0,
+      hostiles: 0,
       wave: 1,
       objective: "Stand by",
       contact: "",
@@ -70,11 +103,11 @@ export class XRHud {
 
   /** Place HUD comfortably left-front; avoid near-eye stereo divergence. */
   updatePose(playerPos: THREE.Vector3, yaw: number) {
-    const forward = 0.95;
-    const left = 0.55;
+    const forward = 1.05;
+    const left = 0.58;
     this.group.position.set(
       playerPos.x - Math.sin(yaw) * forward + Math.sin(yaw - Math.PI / 2) * left,
-      playerPos.y + 1.35,
+      playerPos.y + 1.32,
       playerPos.z - Math.cos(yaw) * forward + Math.cos(yaw - Math.PI / 2) * left
     );
     this.group.rotation.set(0, yaw, 0);
@@ -89,63 +122,144 @@ export class XRHud {
 
   private draw(s: XRHudSnapshot) {
     const { ctx, canvas } = this;
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.fillStyle = "rgba(6, 12, 10, 0.88)";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    ctx.strokeStyle = "rgba(125, 211, 252, 0.55)";
-    ctx.lineWidth = 4;
-    ctx.strokeRect(8, 8, canvas.width - 16, canvas.height - 16);
+    const w = canvas.width;
+    const h = canvas.height;
+    ctx.clearRect(0, 0, w, h);
 
-    ctx.fillStyle = "#94a3b8";
-    ctx.font = "bold 22px monospace";
-    ctx.fillText("BRADLEY · DARK SECTOR · VR", 28, 42);
+    roundRect(ctx, 10, 10, w - 20, h - 20, 20);
+    ctx.fillStyle = "rgba(4, 9, 8, 0.92)";
+    ctx.fill();
+    ctx.strokeStyle = "rgba(183, 196, 154, 0.4)";
+    ctx.lineWidth = 3;
+    ctx.stroke();
 
-    const hpPct = Math.round((Math.max(0, s.health) / Math.max(1, s.maxHealth)) * 100);
-    const hpColor = hpPct <= 30 ? "#f87171" : hpPct <= 55 ? "#fbbf24" : "#86efac";
-    ctx.fillStyle = hpColor;
-    ctx.font = "bold 48px monospace";
-    ctx.fillText(`HP ${hpPct}`, 28, 110);
+    ctx.fillStyle = "rgba(183, 196, 154, 0.9)";
+    ctx.fillRect(10, 10, 12, h - 20);
 
-    ctx.fillStyle = "#e2e8f0";
-    ctx.font = "bold 40px monospace";
-    ctx.fillText(`${s.weapon}  ${s.ammo}`, 28, 170);
+    ctx.fillStyle = "#6b7280";
+    ctx.font = "bold 18px monospace";
+    ctx.fillText("DARK SECTOR · SCOREBOARD", 40, 44);
 
-    ctx.fillStyle = "#cbd5e1";
-    ctx.font = "bold 22px monospace";
-    ctx.fillText(`MED ×${s.medkits}  FRAG ×${s.grenades}`, 28, 205);
+    const streak = streakMeta(s.streak);
+
+    // Primary score block
+    roundRect(ctx, 32, 58, 460, 188, 16);
+    ctx.fillStyle = "rgba(12, 18, 16, 0.96)";
+    ctx.fill();
+    ctx.strokeStyle = s.streak >= 5 ? "rgba(251, 146, 60, 0.55)" : "rgba(103, 232, 249, 0.35)";
+    ctx.lineWidth = 2.5;
+    ctx.stroke();
 
     ctx.fillStyle = "#67e8f9";
+    ctx.font = "bold 20px monospace";
+    ctx.fillText("SCORE", 52, 90);
+    ctx.fillStyle = streak.color;
+    ctx.font = "bold 18px monospace";
+    ctx.textAlign = "right";
+    ctx.fillText(streak.label, 470, 90);
+    ctx.textAlign = "left";
+
+    ctx.fillStyle = "#f8fafc";
+    ctx.font = "bold 84px monospace";
+    ctx.fillText(s.score.toLocaleString(), 52, 172);
+
+    // Streak heat bar
+    ctx.fillStyle = "rgba(30, 41, 39, 1)";
+    ctx.fillRect(52, 196, 400, 14);
+    ctx.fillStyle = streak.bar;
+    ctx.fillRect(52, 196, Math.max(4, Math.min(400, s.streak * 50)), 14);
+
+    ctx.fillStyle = streak.color;
     ctx.font = "bold 26px monospace";
+    ctx.fillText(`×${s.streak}`, 52, 236);
+    ctx.fillStyle = "#94a3b8";
+    ctx.font = "bold 20px monospace";
+    ctx.fillText(`BEST ${s.bestStreak}`, 150, 236);
+    ctx.fillStyle = "#fda4af";
+    ctx.fillText(`${s.sessionKills} KILLS`, 300, 236);
+
+    // Right column — wave / hostiles / range
+    roundRect(ctx, 512, 58, 560, 188, 16);
+    ctx.fillStyle = "rgba(12, 18, 16, 0.96)";
+    ctx.fill();
+    ctx.strokeStyle = "rgba(148, 163, 184, 0.28)";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
     if (s.mode === "range") {
+      ctx.fillStyle = "#e2e8f0";
+      ctx.font = "bold 28px monospace";
       ctx.fillText(
         s.rangeChallengeActive
-          ? `QUAL ${s.rangeChallengeTime.toFixed(1)}s · ACC ${s.rangeAccuracy}%`
-          : `RANGE · HITS ${s.rangeHits} · ACC ${s.rangeAccuracy}%`,
-        28,
-        245
+          ? `QUAL ${s.rangeChallengeTime.toFixed(1)}s`
+          : "RANGE LIVE",
+        536,
+        108,
       );
+      ctx.fillStyle = "#67e8f9";
+      ctx.font = "bold 44px monospace";
+      ctx.fillText(`HITS ${s.rangeHits}`, 536, 168);
+      ctx.fillStyle = "#cbd5e1";
+      ctx.font = "bold 28px monospace";
+      ctx.fillText(`ACC ${s.rangeAccuracy}%`, 536, 214);
     } else {
-      ctx.fillText(`WAVE ${s.wave} · SCORE ${s.score}`, 28, 245);
+      ctx.fillStyle = "#94a3b8";
+      ctx.font = "bold 22px monospace";
+      ctx.fillText(`WAVE ${String(s.wave).padStart(2, "0")}`, 536, 100);
+      ctx.fillStyle = "#f87171";
+      ctx.font = "bold 72px monospace";
+      ctx.fillText(`${s.hostiles}`, 536, 178);
+      ctx.fillStyle = "#cbd5e1";
+      ctx.font = "bold 26px monospace";
+      ctx.fillText("HOSTILES LIVE", 536, 220);
     }
 
+    // HP + ammo row
+    const hpPct = Math.round((Math.max(0, s.health) / Math.max(1, s.maxHealth)) * 100);
+    const hpColor = hpPct <= 30 ? "#f87171" : hpPct <= 55 ? "#fbbf24" : "#86efac";
+    roundRect(ctx, 32, 266, 320, 100, 14);
+    ctx.fillStyle = "rgba(12, 18, 16, 0.96)";
+    ctx.fill();
+    ctx.fillStyle = hpColor;
+    ctx.font = "bold 44px monospace";
+    ctx.fillText(`HP ${hpPct}`, 52, 324);
+    ctx.fillStyle = "rgba(30, 41, 39, 1)";
+    ctx.fillRect(52, 338, 260, 12);
+    ctx.fillStyle = hpColor;
+    ctx.fillRect(52, 338, Math.max(4, (260 * hpPct) / 100), 12);
+
+    roundRect(ctx, 372, 266, 700, 100, 14);
+    ctx.fillStyle = "rgba(12, 18, 16, 0.96)";
+    ctx.fill();
+    ctx.fillStyle = "#e2e8f0";
+    ctx.font = "bold 30px monospace";
+    ctx.fillText(`${s.weapon}`, 396, 310);
+    ctx.fillStyle = "#67e8f9";
+    ctx.font = "bold 44px monospace";
+    ctx.fillText(`${s.ammo}`, 396, 354);
+    ctx.fillStyle = "#94a3b8";
+    ctx.font = "bold 22px monospace";
+    ctx.fillText(`MED ×${s.medkits}   FRAG ×${s.grenades}`, 560, 354);
+
+    // Objective / contact
     ctx.fillStyle = "#cbd5e1";
     ctx.font = "22px sans-serif";
     const obj = (s.missionTitle ? `${s.missionTitle}: ` : "") + (s.objective || "");
-    ctx.fillText(obj.slice(0, 54), 28, 290);
+    ctx.fillText(obj.slice(0, 78), 40, 412);
 
     if (s.contact) {
       ctx.fillStyle = "#fca5a5";
       ctx.font = "bold 28px monospace";
-      ctx.fillText(`CONTACT ${s.contact}`, 28, 335);
+      ctx.fillText(`CONTACT ${s.contact}`, 40, 456);
     } else if (s.subtitle) {
       ctx.fillStyle = "#fde68a";
       ctx.font = "22px sans-serif";
-      ctx.fillText(s.subtitle.slice(0, 60), 28, 335);
+      ctx.fillText(s.subtitle.slice(0, 74), 40, 456);
     }
 
-    ctx.fillStyle = "#64748b";
+    ctx.fillStyle = "#475569";
     ctx.font = "18px monospace";
-    ctx.fillText("LT move · RT snap · R fire · X reload · L medkit · Y menu", 28, 360);
+    ctx.fillText("L-stick move · push sprint · R-stick turn · triggers fire · X reload · Y menu", 40, 510);
 
     this.texture.needsUpdate = true;
   }

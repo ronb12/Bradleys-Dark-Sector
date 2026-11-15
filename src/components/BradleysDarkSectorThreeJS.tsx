@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
-import { FBXLoader } from "three/addons/loaders/FBXLoader.js";
 import { clone as cloneSkeleton } from "three/addons/utils/SkeletonUtils.js";
 import type { GLTF } from "three/addons/loaders/GLTFLoader.js";
+import { createOriginalWeaponView, triggerOriginalWeaponFlash, tickOriginalWeaponFlash } from "../game/darkSectorWeapons";
+import { addOriginalFobProps } from "../game/darkSectorEnvironment";
 import { PvpClient } from "../multiplayer/PvpClient";
 import { DEFAULT_PVP_ROOM } from "../multiplayer/protocol";
 import {
@@ -30,6 +31,7 @@ import {
   spawnFleshDeathGore,
   spawnGroundBloodPool,
   spawnMuzzleBlast,
+  spawnPickupBurst,
   spawnShellCasing,
   spawnTracer,
   suppressionHudOpacity,
@@ -48,7 +50,7 @@ import {
   type CoverPoint,
   type Squad,
 } from "../game/ai";
-import { raycastColliders } from "../game/collisionWorld";
+import { evaluateBulletCover, hasClearShotLane, raycastColliders } from "../game/collisionWorld";
 import { DestructionSystem } from "../game/destruction";
 import { createGrenade, stepGrenade, sweepBullet, type GrenadeProjectile } from "../game/projectiles";
 import { DynamicQualityGovernor } from "../game/quality";
@@ -68,8 +70,12 @@ import {
 import {
   applyPickupEffect,
   createPickupSession,
+  disposePickupSession,
+  pickupAccent,
   respawnPickupsAfterWave,
   resetPickupSession,
+  rollDeathDropKind,
+  spawnDynamicPickup,
   updatePickups,
   type PickupSession,
 } from "../game/pickups";
@@ -188,7 +194,6 @@ import { attachEnemyWeapon, getEnemyMuzzleWorldPos, pickEnemyWeapon, preloadEnem
 import {
   ADS_SENSITIVITY_MULTIPLIER,
   adsFov,
-  createM4Scope,
   RIFLE_SCOPE_MAGNIFICATION,
 } from "../game/scope";
 import {
@@ -241,6 +246,8 @@ type Hud = {
   objective: string;
   intel: string;
   streak: number;
+  bestStreak: number;
+  sessionKills: number;
   medkits: number;
   missionTime: string;
   gameMode: GameMode;
@@ -322,6 +329,9 @@ type GameState = {
   running: boolean;
   disposed: boolean;
   enemyTemplate: THREE.Group | null;
+  /** Worker/Punk silhouette variants — same rig as enemyTemplate, loaded best-effort. */
+  enemyTemplateWorker: THREE.Group | null;
+  enemyTemplatePunk: THREE.Group | null;
   /** Resolves when Quaternius GLB load succeeds or fails — used to avoid procedural-only first wave. */
   enemyTemplatePromise: Promise<void> | null;
   enemyAnimations: THREE.AnimationClip[];
@@ -448,9 +458,12 @@ const ENEMY_GRENADE_MAX_SUPPRESSION = 0.42;
 const GLB_SOLDIER_SCALE = 1;
 
 const SOLDIER_MODEL_URL = "/models/quaternius-swat.glb";
-const WEAPON_MODEL_URL = "/models/m4a1.fbx";
-const WEAPON_TEXTURE_URL = "/models/m4a1-diffuse.png";
-const PISTOL_MODEL_URL = "/models/pistol.glb";
+// Same Ultimate Modular Men rig/24-clip set as the SWAT model (verified byte-identical
+// animation and node names) — used only to vary enemy silhouettes, never remapped.
+const WORKER_MODEL_URL = "/models/quaternius-worker.glb";
+const PUNK_MODEL_URL = "/models/quaternius-punk.glb";
+/** Scout always wears this silhouette; Rifleman rolls it at spawn for squad variety. */
+const PUNK_RIFLEMAN_CHANCE = 0.35;
 
 /**
  * Mixamo/vanguard GLB visual forward is opposite Three.js Object3D.lookAt (+Z).
@@ -525,6 +538,8 @@ export default function BradleysDarkSectorThreeJS() {
     objective: "Sweep the outer yard and survive first contact.",
     intel: "Recon is cold. Expect scattered militia resistance.",
     streak: 0,
+    bestStreak: 0,
+    sessionKills: 0,
     medkits: 1,
     missionTime: "00:00",
     gameMode: "solo",
@@ -908,17 +923,23 @@ export default function BradleysDarkSectorThreeJS() {
     return Math.max(motionSpeed, intendedSpeed * 0.85);
   }
 
-  /** Match Mixamo walk (~1.7 m/s) / run (~4.6 m/s) playback to world velocity. */
+  /** Match Mixamo walk (~1.7 m/s) / run (~3.8–4.6 m/s) playback to world velocity. */
   function syncEnemyLocomotionTimeScale(enemy: THREE.Group, animSpeed: number) {
     const action = enemy.userData.currentAction as THREE.AnimationAction | undefined;
     if (!action) return;
-    if (animSpeed < 0.35) {
+    if (animSpeed < 0.45) {
       action.setEffectiveTimeScale(1);
       return;
     }
     const clipName = String(enemy.userData.currentClipName || "").toLowerCase();
-    const reference = /run|sprint|jog/.test(clipName) ? 4.6 : 1.7;
-    action.setEffectiveTimeScale(THREE.MathUtils.clamp(animSpeed / reference, 0.78, 1.45));
+    // Run_Shoot is authored a bit slower than pure Run — 3.8 keeps gait from looking dragged.
+    const reference = /run_shoot|idle_gun_shoot/.test(clipName)
+      ? 3.8
+      : /run|sprint|jog/.test(clipName)
+        ? 4.4
+        : 1.7;
+    // Floor was 0.78 — slow strafes then looked like slow-motion running in place.
+    action.setEffectiveTimeScale(THREE.MathUtils.clamp(animSpeed / reference, 0.55, 1.35));
   }
 
   function enhanceEnemyCombatReadability(enemy: THREE.Group, type: EnemyType) {
@@ -968,9 +989,25 @@ export default function BradleysDarkSectorThreeJS() {
     enemy.userData.baseY = offset;
   }
 
+  /**
+   * Scout always wears the Worker silhouette (fast/lightly-equipped militia
+   * read); Rifleman — the most common type — rolls the Punk silhouette some
+   * of the time so squads aren't a uniform reskinned clone army. Heavy/
+   * Sniper/Commander stay on the SWAT template as the disciplined regulars.
+   * All three share one rig/animation set, so this is a pure mesh swap.
+   */
+  function pickEnemyModelTemplate(state: GameState, type: EnemyType): THREE.Group | null {
+    if (type.name === "Scout" && state.enemyTemplateWorker) return state.enemyTemplateWorker;
+    if (type.name === "Rifleman" && state.enemyTemplatePunk && Math.random() < PUNK_RIFLEMAN_CHANCE) {
+      return state.enemyTemplatePunk;
+    }
+    return state.enemyTemplate;
+  }
+
   function cloneEnemyFromTemplate(state: GameState, type: EnemyType) {
-    const enemy = state.enemyTemplate
-      ? (cloneSkeleton(state.enemyTemplate) as THREE.Group)
+    const template = pickEnemyModelTemplate(state, type);
+    const enemy = template
+      ? (cloneSkeleton(template) as THREE.Group)
       : makeRealisticProceduralSoldier(type.name, type.color, true);
 
     enemy.name = type.name;
@@ -990,7 +1027,7 @@ export default function BradleysDarkSectorThreeJS() {
       alive: true,
       cooldown: 0.8 + Math.random() * 1.8,
       flank: Math.random() < 0.5 ? -1 : 1,
-      modelType: state.enemyTemplate ? (state.fbxModeLoaded ? "fbx-mixamo" : "mixamo-glb") : "procedural3d",
+      modelType: template ? (state.fbxModeLoaded ? "fbx-mixamo" : "mixamo-glb") : "procedural3d",
       walkTime: Math.random() * 10,
       baseY: 0,
       groundOffset: 0,
@@ -1030,7 +1067,7 @@ export default function BradleysDarkSectorThreeJS() {
     // materials cannot reintroduce emissive accents.
     enhanceEnemyCombatReadability(enemy, type);
 
-    if (state.enemyTemplate) {
+    if (template) {
       enemy.scale.setScalar(state.fbxModeLoaded ? 0.012 : GLB_SOLDIER_SCALE);
       playAnimation(state, enemy, ["idle_gun_pointing", "idle_gun", "idle"]);
       groundAlignSoldier(enemy);
@@ -1168,12 +1205,45 @@ export default function BradleysDarkSectorThreeJS() {
         switchEnemyAnimation(state, avatar, moving ? ["run_shoot", "run", "walk"] : ["idle_gun_pointing", "idle_gun", "idle"]);
       }
       animateSoldier(avatar, dt, moving);
-      syncEnemyWeaponGrip(avatar);
     }
+  }
+
+  /**
+   * Best-effort load for a Worker/Punk silhouette variant. Failure or slow
+   * arrival never blocks the primary template gate — spawns just keep using
+   * the SWAT template until (if ever) the variant resolves.
+   */
+  function loadVariantSoldierTemplate(url: string): Promise<THREE.Group | null> {
+    const gltfLoader = new GLTFLoader();
+    return new Promise((resolve) => {
+      gltfLoader.load(
+        url,
+        (gltf: GLTF) => {
+          const model = new THREE.Group();
+          gltf.scene.rotation.y = Math.PI;
+          model.add(gltf.scene);
+          enableShadows(model);
+          model.scale.setScalar(GLB_SOLDIER_SCALE);
+          resolve(model);
+        },
+        undefined,
+        () => resolve(null),
+      );
+    });
+  }
+
+  function loadEnemyVariantTemplates(state: GameState) {
+    void loadVariantSoldierTemplate(WORKER_MODEL_URL).then((model) => {
+      state.enemyTemplateWorker = model;
+    });
+    void loadVariantSoldierTemplate(PUNK_MODEL_URL).then((model) => {
+      state.enemyTemplatePunk = model;
+    });
   }
 
   function loadGlbFallback(state: GameState) {
     if (state.enemyTemplatePromise) return state.enemyTemplatePromise;
+    loadEnemyVariantTemplates(state);
     const gltfLoader = new GLTFLoader();
     state.enemyTemplatePromise = new Promise<void>((resolve) => {
       gltfLoader.load(
@@ -1428,142 +1498,13 @@ export default function BradleysDarkSectorThreeJS() {
     return group;
   }
 
-  function makeWeaponView() {
-    const group = new THREE.Group();
-    group.position.set(0.55, -0.55, -1.1);
-    group.rotation.set(-0.08, -0.1, 0.05);
-    const black = makeMaterial(0x080808, 0.45, 0.75);
-    const metal = makeMaterial(0x252525, 0.35, 0.9);
-    const glow = new THREE.MeshStandardMaterial({ color: 0x38bdf8, emissive: 0x0ea5e9, emissiveIntensity: 1.2 });
-
-    const body = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.2, 1.25), black);
-    group.add(body);
-    const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.8, 16), metal);
-    barrel.rotation.x = Math.PI / 2;
-    barrel.position.z = -0.85;
-    group.add(barrel);
-    group.add(createM4Scope());
-    const sight = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.06, 0.06), glow);
-    sight.position.set(0, 0.28, -0.38);
-    group.add(sight);
-
-    const textureLoader = new THREE.TextureLoader();
-    textureLoader.load(
-      WEAPON_TEXTURE_URL,
-      (texture) => {
-        texture.colorSpace = THREE.SRGBColorSpace;
-        texture.flipY = true;
-        new FBXLoader().load(
-          WEAPON_MODEL_URL,
-          (model) => {
-            const material = new THREE.MeshStandardMaterial({
-              map: texture,
-              roughness: 0.48,
-              metalness: 0.38,
-            });
-            model.traverse((child) => {
-              if (child instanceof THREE.Mesh) {
-                child.material = material;
-                child.castShadow = true;
-              }
-            });
-
-            // Normalize arbitrary source units and aim the muzzle down camera -Z.
-            // m4a1.fbx is longest on +Z (stock toward -Z); a bare load left the
-            // stock facing the crosshair. Flip 180° about Y so muzzle → -Z,
-            // magazine stays down, grip/stock toward the player.
-            const bounds = new THREE.Box3().setFromObject(model);
-            const size = bounds.getSize(new THREE.Vector3());
-            const center = bounds.getCenter(new THREE.Vector3());
-            const longest = Math.max(size.x, size.y, size.z) || 1;
-            model.position.sub(center);
-            model.scale.setScalar(1.55 / longest);
-            if (size.x >= size.y && size.x >= size.z) {
-              model.rotation.y = Math.PI / 2;
-            } else if (size.z >= size.x && size.z >= size.y) {
-              model.rotation.y = Math.PI;
-            } else {
-              model.rotation.x = -Math.PI / 2;
-            }
-            model.position.set(0.02, -0.02, -0.2);
-
-            group.clear();
-            group.add(model, createM4Scope());
-          },
-          undefined,
-          () => {
-            // Keep the procedural carbine if the asset cannot be loaded.
-          }
-        );
-      },
-      undefined,
-      () => {
-        // Keep the procedural carbine if the texture cannot be loaded.
-      }
-    );
-    return group;
+  // Original, internally authored Dark Sector collection (no external gun downloads).
+  function makeWeaponView(id: WeaponId = "m4"): THREE.Group {
+    return createOriginalWeaponView(id);
   }
 
-  function makePistolView() {
-    const group = new THREE.Group();
-    group.position.set(0.3, -0.43, -0.82);
-    group.rotation.set(-0.04, -0.08, 0.03);
-
-    // Detailed fallback silhouette remains visible while the CC0 GLB loads.
-    const steel = makeMaterial(0x22262a, 0.28, 0.88);
-    const polymer = makeMaterial(0x111315, 0.72, 0.24);
-    const slide = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.17, 0.72), steel);
-    slide.position.z = -0.12;
-    group.add(slide);
-    const frame = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.1, 0.52), polymer);
-    frame.position.set(0, -0.12, 0.02);
-    group.add(frame);
-    const grip = new THREE.Mesh(new THREE.BoxGeometry(0.19, 0.48, 0.25), polymer);
-    grip.position.set(0, -0.36, 0.18);
-    grip.rotation.x = -0.18;
-    group.add(grip);
-    const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.24, 16), steel);
-    barrel.rotation.x = Math.PI / 2;
-    barrel.position.set(0, 0.01, -0.55);
-    group.add(barrel);
-
-    new GLTFLoader().load(
-      PISTOL_MODEL_URL,
-      (gltf: GLTF) => {
-        const model = gltf.scene;
-        // The source scene includes a second, loose magazine for display.
-        // Keep the magazine seated in the frame for the FPS viewmodel.
-        model.children.forEach((child) => {
-          if (child.name === "Pistol_Magazine") child.visible = false;
-        });
-        enableShadows(model);
-        // pistol.glb is longest on X with the muzzle toward +X. +π/2 maps
-        // +X → camera -Z (barrel into the scene); grip stays downward.
-        const bounds = new THREE.Box3().setFromObject(model);
-        const size = bounds.getSize(new THREE.Vector3());
-        const center = bounds.getCenter(new THREE.Vector3());
-        const longest = Math.max(size.x, size.y, size.z) || 1;
-        model.position.sub(center);
-        const normalized = new THREE.Group();
-        normalized.add(model);
-        normalized.scale.setScalar(0.78 / longest);
-        if (size.x >= size.y && size.x >= size.z) {
-          normalized.rotation.y = Math.PI / 2;
-        } else if (size.z >= size.x && size.z >= size.y) {
-          normalized.rotation.y = Math.PI;
-        } else {
-          normalized.rotation.x = -Math.PI / 2;
-        }
-        normalized.position.set(0, -0.08, -0.12);
-        group.clear();
-        group.add(normalized);
-      },
-      undefined,
-      () => {
-        // Keep the modeled procedural pistol if the GLB cannot be loaded.
-      }
-    );
-    return group;
+  function makePistolView(): THREE.Group {
+    return createOriginalWeaponView("pistol");
   }
 
   function switchWeapon(state: GameState, nextWeapon: WeaponId) {
@@ -1578,8 +1519,7 @@ export default function BradleysDarkSectorThreeJS() {
     state.triggerLatched = true;
     state.fireHeat = 0;
     state.recoilYaw = 0;
-    // Crosshair-only: weapon meshes stay hidden across switches.
-    applyPlayerWeaponVisibility(state.weaponViews);
+    applyPlayerWeaponVisibility(state.weaponViews, nextWeapon);
     state.viewmodelPoses[nextWeapon].switchT = 1;
     state.audio.playSwitch();
     if (state.xr?.presenting) {
@@ -2124,6 +2064,7 @@ export default function BradleysDarkSectorThreeJS() {
     // instead of waiting on texture downloads.
     addCombatCoverToCompound(compoundScene, colliders, createFallbackEnvTextures());
     addMilitaryFobDressing(compoundScene, colliders, createFallbackEnvTextures(), mobile);
+    addOriginalFobProps(compoundMapRoot, colliders, mobile);
     scene.userData.combatCoverReady = true;
     // Drop pouch/rubble-sized shadow casters — they dominate GPU cost without reading.
     pruneTinyShadowCasters(compoundMapRoot);
@@ -2144,13 +2085,11 @@ export default function BradleysDarkSectorThreeJS() {
     scene.add(player);
 
     const m4View = makeWeaponView();
-    const smgView = makeWeaponView();
-    smgView.scale.set(0.82, 0.82, 0.72);
-    smgView.position.set(0.5, -0.52, -1);
+    const smgView = makeWeaponView("smg");
     const pistolView = makePistolView();
     camera.add(m4View, smgView, pistolView);
-    // Crosshair-only aiming: keep FPS meshes parented but never drawn.
-    applyPlayerWeaponVisibility({ m4: m4View, smg: smgView, pistol: pistolView });
+    // Show the active original first-person weapon. XR re-parents it to the controller grip.
+    applyPlayerWeaponVisibility({ m4: m4View, smg: smgView, pistol: pistolView }, "m4");
     scene.add(camera);
 
     const allies: THREE.Group[] = [];
@@ -2216,6 +2155,8 @@ export default function BradleysDarkSectorThreeJS() {
       running: false,
       disposed: false,
       enemyTemplate: null,
+      enemyTemplateWorker: null,
+      enemyTemplatePunk: null,
       enemyTemplatePromise: null,
       enemyAnimations: [],
       fbxClips: {},
@@ -2278,7 +2219,7 @@ export default function BradleysDarkSectorThreeJS() {
       altSceneSession: null,
       spawnHalf: COMPOUND_SPAWN_HALF,
       hemisphereLight,
-      pickups: createPickupSession(compoundMapRoot, mobile),
+      pickups: createPickupSession(scene, "compound", mobile),
       pickupPrompt: null,
       xr: null,
       destruction,
@@ -2353,6 +2294,20 @@ export default function BradleysDarkSectorThreeJS() {
     return THREE.MathUtils.clamp(value, -state.spawnHalf, state.spawnHalf);
   }
 
+  function ensurePickupsForScene(state: GameState, sceneId: CombatSceneId) {
+    const lowPower = isTouchDevice() || isXrPresenting(state.renderer, state.xr);
+    if (state.pickups && state.pickups.sceneId === sceneId) {
+      resetPickupSession(state.pickups);
+      state.pickups.root.visible = true;
+      return;
+    }
+    if (state.pickups) {
+      disposePickupSession(state.pickups, state.scene);
+      state.pickups = null;
+    }
+    state.pickups = createPickupSession(state.scene, sceneId, lowPower);
+  }
+
   function activateCombatScene(state: GameState, sceneId: CombatSceneId) {
     if (state.altSceneSession && state.altSceneSession.id !== sceneId) {
       state.scene.remove(state.altSceneSession.root);
@@ -2366,12 +2321,10 @@ export default function BradleysDarkSectorThreeJS() {
       state.compoundMapRoot.visible = true;
       state.colliders = state.compoundColliders;
       state.spawnHalf = COMPOUND_SPAWN_HALF;
-      if (state.pickups) state.pickups.root.visible = true;
       if (state.extractionHeli) state.extractionHeli.root.visible = true;
       applyCombatSceneAtmosphere(state.scene, state.atmosphere, "compound", state.hemisphereLight);
     } else {
       state.compoundMapRoot.visible = false;
-      if (state.pickups) state.pickups.root.visible = false;
       if (state.extractionHeli) state.extractionHeli.root.visible = false;
       if (!state.altSceneSession || state.altSceneSession.id !== sceneId) {
         const session = buildCombatScene(sceneId, {
@@ -2390,6 +2343,7 @@ export default function BradleysDarkSectorThreeJS() {
       applyCombatSceneAtmosphere(state.scene, state.atmosphere, sceneId, state.hemisphereLight);
     }
 
+    ensurePickupsForScene(state, sceneId);
     state.destruction.setColliders(state.colliders);
     state.coverPoints = buildCoverPointsFromColliders(state.colliders);
   }
@@ -2491,7 +2445,12 @@ export default function BradleysDarkSectorThreeJS() {
   ): { point: THREE.Vector3; normal: THREE.Vector3; distance: number; metal: boolean } | null {
     const hit = raycastColliders(state.colliders, origin, dir, maxDist);
     return hit
-      ? { point: hit.point, normal: hit.normal, distance: hit.distance, metal: hit.surface !== "dirt" }
+      ? {
+          point: hit.point,
+          normal: hit.normal,
+          distance: hit.distance,
+          metal: hit.surface !== "dirt",
+        }
       : null;
   }
 
@@ -2545,9 +2504,21 @@ export default function BradleysDarkSectorThreeJS() {
       return true;
     }
     _losDelta.multiplyScalar(1 / dist);
-    const clear = raycastColliders(state.colliders, _losFrom, _losDelta, Math.max(0, dist - 0.3)) == null;
+    // Shooting / engage: allow peeking over light cover (sandbags, Jersey).
+    const clear = hasClearShotLane(state.colliders, _losFrom, _losDelta, Math.max(0, dist - 0.3));
     losCache.set(key, clear);
     return clear;
+  }
+
+  /** Steering LOS: any solid prop blocks so AI still repositions around sandbags. */
+  function hasSteeringLineOfSight(state: GameState, from: THREE.Vector3, to: THREE.Vector3) {
+    _losFrom.set(from.x, from.y + 1.5, from.z);
+    _losTo.set(to.x, to.y + 1.6, to.z);
+    _losDelta.copy(_losTo).sub(_losFrom);
+    const dist = _losDelta.length();
+    if (dist < 0.2) return true;
+    _losDelta.multiplyScalar(1 / dist);
+    return raycastColliders(state.colliders, _losFrom, _losDelta, Math.max(0, dist - 0.3)) == null;
   }
 
   function effectiveFxQuality(state: GameState) {
@@ -2873,8 +2844,25 @@ export default function BradleysDarkSectorThreeJS() {
     return true;
   }
 
+  function trySpawnDeathDrop(state: GameState, enemy: THREE.Object3D) {
+    if (state.gameMode !== "solo" || !state.pickups || !state.running) return;
+    const kind = rollDeathDropKind(String(enemy.userData.enemyType || ""));
+    if (!kind) return;
+    const lowPower = isXrPresenting(state.renderer, state.xr) || isTouchDevice();
+    const drop = spawnDynamicPickup(
+      state.pickups,
+      kind,
+      enemy.position.x + (Math.random() - 0.5) * 0.6,
+      enemy.position.z + (Math.random() - 0.5) * 0.6,
+      state.clock.getElapsed(),
+      lowPower,
+    );
+    if (!drop) return;
+    spawnPickupBurst(state.combatFx, new THREE.Vector3(drop.x, 0.4, drop.z), pickupAccent(kind), effectiveFxQuality(state));
+  }
+
   function collectCompoundPickups(state: GameState, interactPressed: boolean) {
-    if (state.gameMode !== "solo" || state.activeSceneId !== "compound" || !state.pickups || !state.running) return;
+    if (state.gameMode !== "solo" || !state.pickups || !state.running) return;
     const lowPower = isXrPresenting(state.renderer, state.xr) || isTouchDevice();
     const result = updatePickups(state.pickups, {
       playerX: state.player.position.x,
@@ -2886,6 +2874,7 @@ export default function BradleysDarkSectorThreeJS() {
     state.pickupPrompt = result.prompt;
     if (!result.effects.length) return;
     const caps = weaponAmmoCaps();
+    const fxQ = effectiveFxQuality(state);
     for (const effect of result.effects) {
       const patch = {
         health: state.health,
@@ -2906,6 +2895,13 @@ export default function BradleysDarkSectorThreeJS() {
       state.weaponAmmo = patch.weaponAmmo as Record<WeaponId, number>;
       state.ammo = patch.ammo;
       state.maxAmmo = patch.maxAmmo;
+      state.audio.playPickup(effect.kind);
+      spawnPickupBurst(
+        state.combatFx,
+        new THREE.Vector3(effect.x, 0.45, effect.z),
+        effect.color,
+        fxQ,
+      );
       if (toast) {
         setMissionBanner(`${effect.label.toUpperCase()} — ${toast}`);
         window.setTimeout(() => setMissionBanner(""), 2400);
@@ -3086,6 +3082,7 @@ export default function BradleysDarkSectorThreeJS() {
         state.viewmodelPoses[state.activeWeapon].recoilKick + kick.pitch * 2.4
       );
     }
+    triggerOriginalWeaponFlash(state.weapon);
     state.audio.playWeaponFire(state.activeWeapon);
     if (!infiniteAmmo && state.ammo <= 0) beginReload(state);
     if (!isXrPresenting(state.renderer, state.xr)) {
@@ -3110,14 +3107,18 @@ export default function BradleysDarkSectorThreeJS() {
     const adsSpreadMultiplier = THREE.MathUtils.lerp(1, 0.48, state.adsBlend);
     const accuracyMultiplier = Math.max(0.65, 1 - mods.accuracyBonus);
     const keys = keysRef.current;
-    const moving =
-      Boolean(keys.w || keys.a || keys.s || keys.d || keys.ArrowUp || keys.ArrowDown || keys.ArrowLeft || keys.ArrowRight);
+    const moving = isXrPresenting(state.renderer, state.xr)
+      ? false // controller aim is stable; don't inflate VR hipfire from locomotion
+      : Boolean(keys.w || keys.a || keys.s || keys.d || keys.ArrowUp || keys.ArrowDown || keys.ArrowLeft || keys.ArrowRight);
     const sprinting = moving && Boolean(keys.shift);
     const moveSpread = sprinting ? 0.0042 : moving ? 0.002 : 0;
+    // Controller aim is steadier than mouse hipfire — tighten VR cone slightly.
+    const xrAimTighten = shotPose && isXrPresenting(state.renderer, state.xr) ? 0.62 : 1;
     const spread =
       (weapon.baseSpread + weapon.sustainedSpread * state.fireHeat + moveSpread) *
       adsSpreadMultiplier *
-      accuracyMultiplier;
+      accuracyMultiplier *
+      xrAimTighten;
     dir
       .addScaledVector(right, (Math.random() - 0.5) * 2 * spread)
       .addScaledVector(up, (Math.random() - 0.5) * 2 * spread)
@@ -3168,7 +3169,15 @@ export default function BradleysDarkSectorThreeJS() {
       return;
     }
 
-    let closestHit: { enemy: THREE.Group; distance: number; remoteId?: string; point: THREE.Vector3 } | null = null;
+    let closestHit: {
+      enemy: THREE.Group;
+      distance: number;
+      remoteId?: string;
+      point: THREE.Vector3;
+      damageMul: number;
+      coverImpact: ReturnType<typeof evaluateBulletCover>["impact"];
+    } | null = null;
+    // First hard/light impact along the aim ray — used for miss FX when nothing living is hit.
     const coverHit = state.gameMode === "solo" ? raycastWorldCover(state, origin, dir, 90) : null;
     if (state.gameMode === "solo") suppressEnemiesNearShot(state.enemies, origin, dir, 90);
 
@@ -3179,11 +3188,20 @@ export default function BradleysDarkSectorThreeJS() {
         const toTarget = target.clone().sub(origin);
         const distanceAlongShot = toTarget.dot(dir);
         if (distanceAlongShot <= 0 || distanceAlongShot > 90) continue;
-        if (coverHit && coverHit.distance < distanceAlongShot - 0.15) continue;
+        const cover = evaluateBulletCover(state.colliders, origin, dir, distanceAlongShot);
+        if (cover.blocked) continue;
         const closestPoint = origin.clone().add(dir.clone().multiplyScalar(distanceAlongShot));
-        const hitRadius = (enemy.userData.enemyType === "Heavy" || enemy.userData.enemyType === "Commander" ? 1.55 : 1.35) * enemy.scale.x;
+        const hitRadius =
+          (enemy.userData.enemyType === "Heavy" || enemy.userData.enemyType === "Commander" ? 1.55 : 1.4) *
+          enemy.scale.x;
         if (closestPoint.distanceTo(target) <= hitRadius && (!closestHit || distanceAlongShot < closestHit.distance)) {
-          closestHit = { enemy, distance: distanceAlongShot, point: closestPoint };
+          closestHit = {
+            enemy,
+            distance: distanceAlongShot,
+            point: closestPoint,
+            damageMul: cover.damageMul,
+            coverImpact: cover.penetrated ? cover.impact : null,
+          };
         }
       }
     } else {
@@ -3197,7 +3215,14 @@ export default function BradleysDarkSectorThreeJS() {
         const closestPoint = origin.clone().add(dir.clone().multiplyScalar(distanceAlongShot));
         const hitRadius = 1.4;
         if (closestPoint.distanceTo(target) <= hitRadius && (!closestHit || distanceAlongShot < closestHit.distance)) {
-          closestHit = { enemy: avatar, distance: distanceAlongShot, remoteId, point: closestPoint };
+          closestHit = {
+            enemy: avatar,
+            distance: distanceAlongShot,
+            remoteId,
+            point: closestPoint,
+            damageMul: 1,
+            coverImpact: null,
+          };
         }
       }
     }
@@ -3206,6 +3231,15 @@ export default function BradleysDarkSectorThreeJS() {
       const enemy = closestHit.enemy;
       const isArmored =
         enemy.userData.enemyType === "Heavy" || enemy.userData.enemyType === "Commander";
+      if (closestHit.coverImpact) {
+        spawnBulletImpact(
+          state.combatFx,
+          closestHit.coverImpact.point,
+          closestHit.coverImpact.normal,
+          closestHit.coverImpact.surface === "dirt" ? "dirt" : "metal",
+          fxQuality * 0.75,
+        );
+      }
       spawnBulletImpact(state.combatFx, closestHit.point, dir.clone().multiplyScalar(-1), "flesh", fxQuality);
       applyHitReact(enemy, 0.22);
       if (closestHit.remoteId) {
@@ -3216,7 +3250,10 @@ export default function BradleysDarkSectorThreeJS() {
         state.audio.playHitConfirm();
         applyEnemyBloodFlash(enemy, "hit");
       } else {
-        const damage = damageAtRange(mods.damage, closestHit.distance, isArmored);
+        const damage = Math.max(
+          1,
+          Math.round(damageAtRange(mods.damage, closestHit.distance, isArmored) * closestHit.damageMul),
+        );
         const willKill = enemy.userData.health - damage <= 0;
         enemy.userData.health -= damage;
         enemy.userData.hitReact = 0.18;
@@ -3257,6 +3294,7 @@ export default function BradleysDarkSectorThreeJS() {
           state.score += enemy.userData.scoreValue || 100;
           state.killStreak += 1;
           state.bestStreak = Math.max(state.bestStreak, state.killStreak);
+          trySpawnDeathDrop(state, enemy);
           if (state.gameMode === "solo" && allowRadioCue("killConfirm", 12000)) {
             state.audio.playRadio(killConfirmLine(), { channel: "mission" });
           }
@@ -3357,6 +3395,7 @@ export default function BradleysDarkSectorThreeJS() {
           state.sessionKills += 1;
           state.audio.playGoreImpact("kill");
           applyEnemyBloodFlash(enemy, "kill");
+          trySpawnDeathDrop(state, enemy);
         }
       }
     } else {
@@ -3406,9 +3445,15 @@ export default function BradleysDarkSectorThreeJS() {
       }
       const beacon = new THREE.Mesh(
         new THREE.CylinderGeometry(0.08, 0.08, isExtract ? 3.2 : 2.4, 8),
-        new THREE.MeshBasicMaterial({ color, transparent: true, opacity: isExtract ? 0.7 : 0.55 })
+        new THREE.MeshBasicMaterial({
+          color,
+          transparent: true,
+          opacity: isExtract ? 0.7 : 0.55,
+          depthWrite: false,
+        })
       );
       beacon.position.y = isExtract ? 1.6 : 1.2;
+      beacon.renderOrder = 5;
       g.add(beacon);
       g.position.set(marker.x, 0.05, marker.z);
       g.userData.markerId = marker.id;
@@ -3485,33 +3530,48 @@ export default function BradleysDarkSectorThreeJS() {
     const inXr = isXrPresenting(state.renderer, xr);
 
     if (canControl && inXr && xr) {
-      const frame = xr.input.poll(state.settings.snapTurnDegrees);
-      const selectEdge = frame.fire && !xr.selectWasDown;
-      xr.selectWasDown = frame.fire;
+      const frame = xr.input.poll({
+        snapDegrees: state.settings.snapTurnDegrees,
+        turnMode: state.settings.xrTurnMode,
+        smoothTurnSpeed: state.settings.xrSmoothTurnSpeed,
+        dt,
+      });
 
       if (frame.menu) {
         if (xr.menu.isOpen()) {
           xr.menu.hide();
+          xr.input.setRaysVisible(false);
           if (state.running) xr.hud.setVisible(true);
         } else if (state.running) {
           xr.hud.setVisible(false);
+          xr.input.setRaysVisible(true);
           xr.menu.showPause();
-        } else xr.menu.showMain();
+        } else {
+          xr.input.setRaysVisible(true);
+          xr.menu.showMain();
+        }
       }
 
-      if (frame.snapRadians !== 0) {
-        xr.rig.snapTurn(frame.snapRadians);
+      // Snap (discrete) or smooth (continuous) right-stick yaw.
+      if (frame.turnRadians !== 0) {
+        xr.rig.snapTurn(frame.turnRadians);
       }
       state.yaw = xr.rig.getYaw();
 
       xr.menu.updatePose(state.player.position, state.yaw);
       if (xr.menu.isOpen()) {
-        xr.menu.updateInteraction(xr.input.getUiRayTarget(), frame.fire, selectEdge);
+        // Either-hand aim + select — pointing with left while pulling left trigger
+        // must work; gameplay fire is right-hand only and was ignoring UI clicks.
+        const ui = xr.input.getUiSelectState(xr.selectWasDown);
+        xr.selectWasDown = ui.pressed;
+        xr.input.setRaysVisible(true);
+        xr.menu.updateInteraction(xr.input.getUiRayTargets(), ui.pressed, ui.edge);
         xr.reticle.setVisible(false);
         xr.rig.setFloorPosition(state.player.position.x, state.player.position.y, state.player.position.z);
         updateComfortVignette(xr, false, state.settings.comfortVignette, dt);
-        state.triggerLatched = frame.fire;
+        state.triggerLatched = ui.pressed;
       } else if (state.running) {
+        xr.selectWasDown = frame.fire;
         // Attach when missing OR when the resolved weapon grip changes (Quest often
         // reports handedness late — first attach can land on the wrong controller).
         const grip = xr.input.getWeaponGrip();
@@ -3524,8 +3584,18 @@ export default function BradleysDarkSectorThreeJS() {
 
         state.crouching = frame.crouch;
         state.adsHeld = frame.ads;
-        const forward = new THREE.Vector3(Math.sin(state.yaw), 0, -Math.cos(state.yaw)).normalize();
-        const right = new THREE.Vector3().crossVectors(new THREE.Vector3(0, 1, 0), forward).normalize();
+        // Head-oriented stick locomotion (Quest standard). Body/snap yaw alone feels
+        // "reversed" when you look around without snap-turning.
+        const forward = new THREE.Vector3();
+        state.camera.getWorldDirection(forward);
+        forward.y = 0;
+        if (forward.lengthSq() < 1e-6) {
+          forward.set(Math.sin(state.yaw), 0, -Math.cos(state.yaw));
+        } else {
+          forward.normalize();
+        }
+        // Right-handed: forward × up = strafe-right (matches Quest thumbstick X).
+        const right = new THREE.Vector3().crossVectors(forward, new THREE.Vector3(0, 1, 0)).normalize();
         const move = new THREE.Vector3();
         move.addScaledVector(forward, frame.moveY);
         move.addScaledVector(right, frame.moveX);
@@ -3541,7 +3611,8 @@ export default function BradleysDarkSectorThreeJS() {
         state.player.position.copy(moved.position);
         // Floor origin only — never copy headset pose onto the rig (that head-locks the world).
         xr.rig.setFloorPosition(state.player.position.x, state.player.position.y, state.player.position.z);
-        updateComfortVignette(xr, moving, state.settings.comfortVignette && !state.settings.reduceMotion, dt);
+        const turning = Math.abs(frame.lookX) > 0.05;
+        updateComfortVignette(xr, moving || turning, state.settings.comfortVignette && !state.settings.reduceMotion, dt);
 
         if (moving) {
           state.footstepAccum += dt * (sprinting ? 2.4 : state.crouching ? 1.1 : 1.7);
@@ -3558,8 +3629,8 @@ export default function BradleysDarkSectorThreeJS() {
         state.fireHeat = Math.max(0, state.fireHeat - dt * (triggerDown ? 0.08 : 1.8));
         const weaponConfig = WEAPONS[state.activeWeapon];
         const pose = xr.input.getShotPose();
-        // Match the website crosshair visually, but keep it weapon-aimed in VR.
-        xr.reticle.update(pose, !aiming);
+        // Keep weapon-aimed reticle visible — hide only when menu owns the rays.
+        xr.reticle.update(pose, true, aiming);
         if (weaponConfig.automatic) {
           if (triggerDown) shoot(state, pose);
         } else if (triggerDown && !state.triggerLatched) {
@@ -3645,6 +3716,7 @@ export default function BradleysDarkSectorThreeJS() {
         aiming,
         weapon: state.activeWeapon,
       });
+      tickOriginalWeaponFlash(state.weapon, dt);
 
       // Sticky Space pulse: survives keyup-before-frame and retries if fireCooldown blocks.
       const spacePulse = Boolean(keys.__spacePulse);
@@ -3687,12 +3759,17 @@ export default function BradleysDarkSectorThreeJS() {
     }
 
     if (inXr && xr) {
+      const hostilesAlive = state.enemies.filter((e) => e.userData.alive).length;
       xr.hud.update({
         health: state.health,
         maxHealth: state.maxHealth,
         ammo: state.reload > 0 ? "…" : state.ammo,
         weapon: WEAPONS[state.activeWeapon].name,
         score: state.score,
+        streak: state.killStreak,
+        bestStreak: state.bestStreak,
+        sessionKills: state.sessionKills,
+        hostiles: hostilesAlive,
         wave: state.wave,
         objective: state.activeMission
           ? missionHudText(state.activeMission).objective
@@ -3813,7 +3890,7 @@ export default function BradleysDarkSectorThreeJS() {
         dt,
         now: state.clock.getElapsed(),
         tryMove: (from: THREE.Vector3, delta: THREE.Vector3) => tryMove(state, from, delta),
-        hasLos: (from: THREE.Vector3, to: THREE.Vector3) => hasLineOfSight(state, from, to),
+        hasLos: (from: THREE.Vector3, to: THREE.Vector3) => hasSteeringLineOfSight(state, from, to),
       };
       updateSquadCoordination(state.squads, aiCtx);
 
@@ -3831,8 +3908,12 @@ export default function BradleysDarkSectorThreeJS() {
       const distance = toPlayer.length();
       const range = enemy.userData.range || 5;
       // Stagger heavy AI for distant hostiles — keep locomotion from cached steer.
+      // XR: more aggressive skip so Quest keeps ~72Hz.
       enemy.userData._aiFrame = ((enemy.userData._aiFrame as number) || 0) + 1;
-      const aiStride = distance > 22 ? 3 : distance > 14 ? 2 : 1;
+      const xrPresenting = isXrPresenting(state.renderer, state.xr);
+      const aiStride = xrPresenting
+        ? distance > 18 ? 4 : distance > 10 ? 3 : 2
+        : distance > 22 ? 3 : distance > 14 ? 2 : 1;
       const skipHeavyAi = aiStride > 1 && (enemy.userData._aiFrame as number) % aiStride !== 0;
       const cachedSteer = enemy.userData._cachedSteerResult as
         | ReturnType<typeof computeEnemySteer>
@@ -3857,12 +3938,23 @@ export default function BradleysDarkSectorThreeJS() {
       const coverDist = coverPoint
         ? Math.hypot(coverPoint.x - enemy.position.x, coverPoint.z - enemy.position.z)
         : Infinity;
+      const forceCoverArrive = Boolean(enemy.userData.coverForceArrive);
       const settledForVolley =
-        steerResult.intent === "hold"
+        forceCoverArrive
+        || steerResult.intent === "hold"
         || steerResult.intent === "strafe"
-        || (steerResult.intent === "cover" && coverDist <= 2.1);
+        || (steerResult.intent === "cover" && coverDist <= 2.45);
+      // Long relocates must keep feet moving — never freeze mid-advance / cover run.
+      const hardRelocating =
+        !forceCoverArrive
+        && (
+          steerResult.intent === "advance"
+          || steerResult.intent === "retreat"
+          || (steerResult.intent === "cover" && coverDist > 2.45)
+        );
       const mayPlantToFire =
         hasEngageLane
+        && !hardRelocating
         && enemy.userData.cooldown <= 0
         && (enemy.userData.burstShotsRemaining || 0) <= 0
         && aiNowEarly >= (enemy.userData.nextFireHoldAt || 0)
@@ -3871,21 +3963,28 @@ export default function BradleysDarkSectorThreeJS() {
       if (mayPlantToFire) {
         enemy.userData.fireHoldUntil = aiNowEarly + 0.42 + Math.random() * 0.28;
         enemy.userData.nextFireHoldAt = aiNowEarly + 2.8 + Math.random() * 1.4;
+      } else if (hardRelocating) {
+        // Drop stale plant windows so a prior volley can't glue them in place.
+        enemy.userData.fireHoldUntil = 0;
+        enemy.userData.kneelUntil = 0;
       }
       const fireHolding = aiNowEarly < (enemy.userData.fireHoldUntil || 0);
       const relocatingCandidate =
-        !fireHolding
-        && (
-          steerResult.intent === "cover"
-          || steerResult.intent === "advance"
-          || steerResult.intent === "retreat"
-          || steerResult.intent === "strafe"
+        hardRelocating
+        || (
+          !fireHolding
+          && (
+            steerResult.intent === "cover"
+            || steerResult.intent === "advance"
+            || steerResult.intent === "retreat"
+            || steerResult.intent === "strafe"
+          )
         );
       const kneelStance = updateEnemyKneelStance(enemy, {
         now: aiNowEarly,
         dt,
         distance,
-        fireHolding,
+        fireHolding: fireHolding && !hardRelocating,
         relocating: relocatingCandidate,
         intent: steerResult.intent,
         wantCover: steerResult.wantCover,
@@ -3893,8 +3992,11 @@ export default function BradleysDarkSectorThreeJS() {
       });
       // Refresh after kneel may extend the plant window.
       const fireHoldingNow = aiNowEarly < (enemy.userData.fireHoldUntil || 0);
-      const relocating = relocatingCandidate && !kneelStance.planted;
-      const planted = fireHoldingNow || kneelStance.planted;
+      // Hard relocates keep locomotion authority even while kneel blend drains —
+      // otherwise burst-damp treats them as planted and zeroes steer.
+      const relocating = hardRelocating || (relocatingCandidate && !kneelStance.planted);
+      // Only plant when settled — hard relocates always keep steering authority.
+      const planted = !hardRelocating && settledForVolley && (fireHoldingNow || kneelStance.planted);
       const steeringResponse =
         planted
           ? 16
@@ -3926,28 +4028,72 @@ export default function BradleysDarkSectorThreeJS() {
       const kneelDrop = (kneelStance.kneelBlend || 0) * 0.28;
       enemy.position.y = groundY - kneelDrop;
       enemy.userData.baseY = groundY;
+      const movedSqEarly = before.distanceToSquared(enemy.position);
+      const movedAlong =
+        desiredSteer.lengthSq() > 0.0001
+          ? new THREE.Vector3()
+            .subVectors(enemy.position, before)
+            .dot(desiredSteer.clone().normalize())
+          : Math.sqrt(movedSqEarly);
+      // Only count progress toward the goal — wall slides must not clear stuck.
       if (result.stuck && !planted) {
         enemy.userData.stuckTime = (enemy.userData.stuckTime || 0) + dt;
         if (state.clock.getElapsed() >= (enemy.userData.nextFlankFlipAt || 0)) {
           enemy.userData.flank *= -1;
           enemy.userData.nextFlankFlipAt = state.clock.getElapsed() + 0.8;
         }
-        if (enemy.userData.stuckTime > 1.25) {
+      } else if (!planted && smoothedSteer.lengthSq() > 0.16 && movedAlong < 0.012) {
+        enemy.userData.stuckTime = (enemy.userData.stuckTime || 0) + dt * 0.95;
+      } else if (movedAlong >= 0.012) {
+        enemy.userData.stuckTime = 0;
+      }
+
+      if (!planted && (enemy.userData.stuckTime || 0) > 0.45) {
+        // Blocked on the way to cover: fight from here if close, else abandon the slot.
+        if (steerResult.intent === "cover" && coverPoint && coverDist <= 5.5) {
+          enemy.userData.coverForceArrive = true;
+          enemy.userData.coverArrivedAt = enemy.userData.coverArrivedAt || state.clock.getElapsed();
+          enemy.userData.stuckTime = 0;
+          smoothedSteer.set(0, 0, 0);
+        } else {
           const toward = distance > 0.001 ? toPlayer.clone().normalize() : new THREE.Vector3(0, 0, -1);
           const flankDir = new THREE.Vector3(-toward.z, 0, toward.x).multiplyScalar(enemy.userData.flank || 1);
-          const escape = toward
-            .clone()
-            .multiplyScalar(0.35)
-            .addScaledVector(flankDir, 0.75)
-            .normalize()
-            .multiplyScalar(enemy.userData.speed * speedMul * dt);
-          const bump = tryMove(state, enemy.position, escape);
+          const stepLen = Math.max(0.18, enemy.userData.speed * speedMul * Math.max(dt, 1 / 60));
+          const candidates = [
+            flankDir.clone().multiplyScalar(stepLen * 1.35),
+            flankDir.clone().multiplyScalar(-stepLen * 1.35),
+            toward.clone().multiplyScalar(-stepLen),
+            toward.clone().multiplyScalar(0.45).addScaledVector(flankDir, 0.85).normalize().multiplyScalar(stepLen),
+            toward.clone().multiplyScalar(0.55).addScaledVector(flankDir, -0.85).normalize().multiplyScalar(stepLen),
+            new THREE.Vector3(stepLen, 0, 0),
+            new THREE.Vector3(-stepLen, 0, 0),
+            new THREE.Vector3(0, 0, stepLen),
+            new THREE.Vector3(0, 0, -stepLen),
+          ];
+          let bump = { position: enemy.position.clone(), moved: false, stuck: true };
+          for (const escape of candidates) {
+            bump = tryMove(state, enemy.position, escape);
+            if (bump.moved) break;
+          }
           enemy.position.copy(bump.position);
           enemy.position.y = groundY - kneelDrop;
-          enemy.userData.stuckTime = bump.moved ? 0.8 : 1.1;
+          if (bump.moved) {
+            enemy.userData.stuckTime = 0;
+          } else {
+            if (coverPoint) {
+              enemy.userData.bannedCover = coverPoint;
+              enemy.userData.coverBanUntil = state.clock.getElapsed() + 5.5;
+            }
+            enemy.userData.coverTarget = null;
+            enemy.userData.coverLockUntil = 0;
+            enemy.userData.coverArrivedAt = 0;
+            enemy.userData.coverForceArrive = false;
+            enemy.userData.aiIntent = "strafe";
+            enemy.userData.intentUntil = state.clock.getElapsed() + 1.6;
+            enemy.userData.flank *= -1;
+            enemy.userData.stuckTime = 0.2;
+          }
         }
-      } else if (before.distanceToSquared(enemy.position) > 0.00001) {
-        enemy.userData.stuckTime = 0;
       }
 
       const turnError = turnEnemyTowardPlayer(enemy, state.player.position, dt);
@@ -3958,14 +4104,23 @@ export default function BradleysDarkSectorThreeJS() {
       const animSpeed = resolveEnemyAnimSpeed(motionSpeed, intendedSpeed, relocating && !planted && steerMag > 0.2);
       enemy.userData.motionSpeed = motionSpeed;
       enemy.userData.intendedSpeed = intendedSpeed;
-      // Prefer locomotion clips whenever steer/step says we should be moving,
-      // even if a collider nibble keeps world displacement tiny for a frame.
-      const wantsLocomotion = relocating && !planted && smoothedSteer.lengthSq() > 0.04;
-      const enemyMoving = !planted && (movedDistance > 0.0015 || wantsLocomotion);
+      // Only play run when the body actually relocates. Steering-into-a-wall used to
+      // keep Run_Shoot on while world speed ≈ 0 (moonwalk / slow-mo run-in-place).
+      const actuallyMoving = motionSpeed > 0.7 || movedDistance > 0.012;
+      const stuckPushing =
+        relocating
+        && !planted
+        && smoothedSteer.lengthSq() > 0.04
+        && !actuallyMoving
+        && (enemy.userData.stuckTime || 0) > 0.16;
+      const enemyMoving = !planted && actuallyMoving && !stuckPushing;
       if (enemy.userData.modelType === "fbx-mixamo" || enemy.userData.modelType === "mixamo-glb") {
         if (kneelStance.kneelBlend > 0.45 && !enemyMoving) {
           switchEnemyAnimation(state, enemy, ["kneel", "kneeling", "crouch", "idle_gun_pointing", "aim", "idle"]);
-        } else if ((fireHoldingNow || (steerResult.wantCover && steerResult.intent === "hold")) && !enemyMoving) {
+        } else if (
+          stuckPushing
+          || ((fireHoldingNow || (steerResult.wantCover && steerResult.intent === "hold")) && !enemyMoving)
+        ) {
           switchEnemyAnimation(state, enemy, ["idle_gun_pointing", "idle_gun", "aim", "idle"]);
         } else {
           // Quaternius Walk/Run are unarmed — using them while the rifle is
@@ -3979,9 +4134,9 @@ export default function BradleysDarkSectorThreeJS() {
               : ["idle_gun_pointing", "idle_gun", "aim", "idle"]
           );
         }
-        syncEnemyLocomotionTimeScale(enemy, enemyMoving ? animSpeed : 0);
+        syncEnemyLocomotionTimeScale(enemy, enemyMoving ? Math.max(animSpeed, motionSpeed) : 0);
       }
-      const gaitRate = enemyMoving ? THREE.MathUtils.clamp(animSpeed / 3.2, 0.75, 1.55) : 1;
+      const gaitRate = enemyMoving ? THREE.MathUtils.clamp(Math.max(animSpeed, motionSpeed) / 3.2, 0.75, 1.55) : 1;
       animateSoldier(enemy, dt, enemyMoving, gaitRate, kneelStance.kneelBlend);
       enemy.userData.cooldown -= dt;
       enemy.userData.burstShotTimer = Math.max(0, (enemy.userData.burstShotTimer || 0) - dt);
@@ -4025,10 +4180,15 @@ export default function BradleysDarkSectorThreeJS() {
         enemy.userData.burstShotsRemaining =
           typeName === "Sniper" ? 1 : typeName === "Heavy" ? 4 : typeName === "Scout" ? 2 : 3;
         enemy.userData.burstShotTimer = 0;
-        enemy.userData.fireHoldUntil = Math.max(
-          enemy.userData.fireHoldUntil || 0,
-          aiNow + 0.32 + (enemy.userData.burstShotsRemaining || 1) * 0.12
-        );
+        // Plant windows come only from mayPlantToFire — do not glue relocating
+        // soldiers in place every time a burst starts (that froze the AI after
+        // permissive cover LOS made engage lanes almost always true).
+        if (settledForVolley && !hardRelocating && fireHoldingNow) {
+          enemy.userData.fireHoldUntil = Math.max(
+            enemy.userData.fireHoldUntil || 0,
+            aiNow + 0.32 + (enemy.userData.burstShotsRemaining || 1) * 0.12
+          );
+        }
       }
 
       const canShootBurstRound =
@@ -4448,7 +4608,9 @@ export default function BradleysDarkSectorThreeJS() {
       wave: state.wave,
       objective: directive.objective,
       intel: directive.intel,
-      streak: state.bestStreak,
+      streak: state.killStreak,
+      bestStreak: state.bestStreak,
+      sessionKills: state.gameMode === "pvp" ? state.pvpKills : state.sessionKills,
       medkits: state.medkits,
       missionTime: state.gameMode === "range" && rangeStats?.challengeActive
         ? `${Math.ceil(rangeStats.challengeTimeLeft)}s`
@@ -4506,7 +4668,7 @@ export default function BradleysDarkSectorThreeJS() {
     };
 
     hudTimerRef.current += dt;
-    const hudKey = `${nextHud.health}|${nextHud.ammo}|${nextHud.activeWeapon}|${nextHud.m4Ammo}|${nextHud.smgAmmo}|${nextHud.pistolAmmo}|${nextHud.grenades}|${nextHud.score}|${nextHud.enemies}|${nextHud.wave}|${nextHud.missionTime}|${nextHud.medkits}|${nextHud.streak}|${nextHud.modelMode}|${nextHud.gameMode}|${nextHud.kills}|${nextHud.deaths}|${nextHud.pvpPlayers}|${nextHud.pvpStatus}|${nextHud.objective}|${nextHud.contact}|${nextHud.damageBearing}|${nextHud.missionTitle}|${nextHud.missionProgress.toFixed(2)}|${nextHud.suppression.toFixed(2)}|${nextHud.spreadRing.toFixed(2)}|${nextHud.crouching}|${nextHud.aiming}|${nextHud.subtitle}|${nextHud.interactPrompt}|${nextHud.missionBanner}|${nextHud.unlockNotice}|${nextHud.rangeHits}|${nextHud.rangeMisses}|${nextHud.rangeAccuracy.toFixed(0)}|${nextHud.rangeChallengeActive}|${nextHud.rangeChallengeScore}|${nextHud.rangeHighestBadge}|${rangeResult?.endedAt ?? 0}`;
+    const hudKey = `${nextHud.health}|${nextHud.ammo}|${nextHud.activeWeapon}|${nextHud.m4Ammo}|${nextHud.smgAmmo}|${nextHud.pistolAmmo}|${nextHud.grenades}|${nextHud.score}|${nextHud.enemies}|${nextHud.wave}|${nextHud.missionTime}|${nextHud.medkits}|${nextHud.streak}|${nextHud.bestStreak}|${nextHud.sessionKills}|${nextHud.modelMode}|${nextHud.gameMode}|${nextHud.kills}|${nextHud.deaths}|${nextHud.pvpPlayers}|${nextHud.pvpStatus}|${nextHud.objective}|${nextHud.contact}|${nextHud.damageBearing}|${nextHud.missionTitle}|${nextHud.missionProgress.toFixed(2)}|${nextHud.suppression.toFixed(2)}|${nextHud.spreadRing.toFixed(2)}|${nextHud.crouching}|${nextHud.aiming}|${nextHud.subtitle}|${nextHud.interactPrompt}|${nextHud.missionBanner}|${nextHud.unlockNotice}|${nextHud.rangeHits}|${nextHud.rangeMisses}|${nextHud.rangeAccuracy.toFixed(0)}|${nextHud.rangeChallengeActive}|${nextHud.rangeChallengeScore}|${nextHud.rangeHighestBadge}|${rangeResult?.endedAt ?? 0}`;
     // Skip React HUD writes while immersive — world-space XRHud already covers this, and
     // React re-renders during XR frames contribute to Quest compositor freezes.
     const immersive = isXrPresenting(state.renderer, state.xr);
@@ -4527,8 +4689,8 @@ export default function BradleysDarkSectorThreeJS() {
     console.assert(Boolean(testSoldier.userData.limbs?.rifle), "Procedural soldier should track rifle animation data.");
     console.assert(testSoldier.userData.alive === true, "Procedural test soldier factory should still work only as an internal fallback test, not as visible gameplay characters.");
     console.assert(SOLDIER_MODEL_URL.endsWith(".glb"), "Primary soldier model should be a web-ready GLB.");
-    console.assert(WEAPON_MODEL_URL.endsWith(".fbx"), "Primary weapon model should be an FBX.");
-    console.assert(PISTOL_MODEL_URL.endsWith(".glb"), "Secondary weapon model should be a web-ready GLB.");
+    console.assert(createOriginalWeaponView("m4").userData.darkSectorOriginal === true, "Dark Sector original carbine should be available.");
+    console.assert(createOriginalWeaponView("pistol").userData.darkSectorOriginal === true, "Dark Sector original sidearm should be available.");
     console.assert(WEAPONS.m4.automatic && !WEAPONS.pistol.automatic, "M4 should be automatic and pistol semi-automatic.");
     console.assert(60 / WEAPONS.m4.fireInterval >= 650, "M4 rapid fire should run at least 650 RPM.");
     console.assert(WEAPONS.m4.sustainedSpread > WEAPONS.m4.baseSpread, "M4 sustained fire should increase spread.");
@@ -4595,7 +4757,7 @@ export default function BradleysDarkSectorThreeJS() {
     state.weaponAmmo = { m4: m4Max, smg: smgMax, pistol: pistolMax };
     state.activeWeapon = "m4";
     state.weapon = state.weaponViews.m4;
-    applyPlayerWeaponVisibility(state.weaponViews);
+    applyPlayerWeaponVisibility(state.weaponViews, "m4");
     state.ammo = state.weaponAmmo.m4;
     state.maxAmmo = m4Max;
     state.reload = 0;
@@ -4660,6 +4822,7 @@ export default function BradleysDarkSectorThreeJS() {
     state.missionMarkers = [];
     state.dyingEnemies = [];
     state.gameMode = "range";
+    if (state.pickups) state.pickups.root.visible = false;
     state.pvpAlive = true;
     state.pvpRespawnBanner = "";
     state.running = true;
@@ -4813,7 +4976,7 @@ export default function BradleysDarkSectorThreeJS() {
     state.dyingEnemies = [];
     resetAlliedNpcSession(state.alliedNpcState);
     refreshAlliedNpcs(state);
-    if (sceneId === "compound" && state.pickups) resetPickupSession(state.pickups);
+    if (state.pickups) resetPickupSession(state.pickups);
     clearAllEnemies(state);
     if (forceExtract) {
       // Ensure extract mission even if pool rotation changes.
@@ -4863,6 +5026,7 @@ export default function BradleysDarkSectorThreeJS() {
     state.audio.stopRangeAudio();
     state.audio.setGameMode("pvp");
     state.gameMode = "pvp";
+    if (state.pickups) state.pickups.root.visible = false;
     state.running = true;
     state.pvpAlive = true;
     state.pvpRespawnBanner = "";
@@ -5129,7 +5293,12 @@ export default function BradleysDarkSectorThreeJS() {
             /* ignore */
           }
         } else if (state.xr) {
-          detachWeaponsFromGrip(state.xr, state.camera, state.weaponViews);
+          detachWeaponsFromGrip(state.xr, state.camera, state.weaponViews, state.activeWeapon);
+          const eye = state.crouching ? 1.35 : 1.95;
+          state.camera.position.copy(state.player.position).add(new THREE.Vector3(0, eye, 0));
+          state.camera.rotation.set(state.pitch, state.yaw, 0, "YXZ");
+          state.camera.scale.set(1, 1, 1);
+          state.camera.updateMatrixWorld(true);
           const mobile = isTouchDevice();
           state.quality.setTier(
             mobile ? "mobile" : "desktop",
@@ -5298,18 +5467,47 @@ export default function BradleysDarkSectorThreeJS() {
         }
         state.mixers.forEach((mixer) => {
           const root = mixer.getRoot?.() as THREE.Object3D | undefined;
+          let step = dt;
           if (root?.userData?.enemy) {
             const dx = root.position.x - state.player.position.x;
             const dz = root.position.z - state.player.position.z;
             const distSq = dx * dx + dz * dz;
-            // Far enemy clips at half rate — big CPU win with little visual cost.
-            if (distSq > 28 * 28 && (xrFrameCount & 1) === 1) return;
+            // Far enemies: update every other frame, but advance 2× dt so clips
+            // don't play in slow motion (the old skip left timeScale half-speed).
+            if (distSq > 28 * 28) {
+              if ((xrFrameCount & 1) === 1) return;
+              step = dt * 2;
+            }
           }
-          mixer.update(dt);
+          mixer.update(step);
         });
+        // Wrist-follow rifles must track bones AFTER mixer.update — syncing in
+        // updateGame left guns floating at last-frame wrists (very obvious in VR).
+        const gripBudget = presenting ? 10 : 24;
+        let gripSynced = 0;
+        const sortedForGrip = presenting
+          ? [...state.enemies].sort((a, b) => {
+              const da = a.position.distanceToSquared(state.player.position);
+              const db = b.position.distanceToSquared(state.player.position);
+              return da - db;
+            })
+          : state.enemies;
+        for (const enemy of sortedForGrip) {
+          if (!enemy.userData.alive) continue;
+          const dx = enemy.position.x - state.player.position.x;
+          const dz = enemy.position.z - state.player.position.z;
+          const distSq = dx * dx + dz * dz;
+          if (presenting && distSq > 22 * 22) continue;
+          if (presenting && gripSynced >= gripBudget) break;
+          syncEnemyWeaponGrip(enemy);
+          gripSynced += 1;
+        }
+        for (const avatar of state.remotePlayers.values()) {
+          syncEnemyWeaponGrip(avatar);
+        }
         // Atmosphere every other frame on XR always; on desktop when under load (fxScale).
         xrFrameCount += 1;
-        const atmoStride = presenting || state.quality.getFxScale() < 0.85 ? 2 : 1;
+        const atmoStride = presenting ? 3 : state.quality.getFxScale() < 0.85 ? 2 : 1;
         if (xrFrameCount % atmoStride === 0) {
           updateAtmosphereSystem(state.atmosphere, state.scene, state.clock.getElapsed(), dt * atmoStride);
         }
@@ -5344,6 +5542,10 @@ export default function BradleysDarkSectorThreeJS() {
       if (state.xr) {
         disposeXRRuntime(state.xr, state.renderer, state.scene, state.camera, state.weaponViews);
         state.xr = null;
+      }
+      if (state.pickups) {
+        disposePickupSession(state.pickups, state.scene);
+        state.pickups = null;
       }
       state.renderer.domElement.removeEventListener("webglcontextlost", onContextLost);
       state.renderer.domElement.removeEventListener("webglcontextrestored", onContextRestored);
@@ -5395,18 +5597,40 @@ export default function BradleysDarkSectorThreeJS() {
         state.xr.hud.setVisible(true);
         break;
       case "settings": {
-        const order: Array<30 | 45 | 90> = [30, 45, 90];
-        const idx = Math.max(0, order.indexOf(state.settings.snapTurnDegrees));
-        const nextDeg = order[(idx + 1) % order.length];
-        const next = {
-          ...state.settings,
-          snapTurnDegrees: nextDeg,
-          comfortVignette: !state.settings.comfortVignette,
-        };
+        // Cycle: snap 30 → 45 → 90 → smooth → snap 30…
+        const snapOrder: Array<30 | 45 | 90> = [30, 45, 90];
+        let next = { ...state.settings };
+        if (state.settings.xrTurnMode === "smooth") {
+          next = {
+            ...next,
+            xrTurnMode: "snap",
+            snapTurnDegrees: 30,
+            comfortVignette: !state.settings.comfortVignette,
+          };
+        } else {
+          const idx = Math.max(0, snapOrder.indexOf(state.settings.snapTurnDegrees));
+          if (idx >= snapOrder.length - 1) {
+            next = {
+              ...next,
+              xrTurnMode: "smooth",
+              comfortVignette: !state.settings.comfortVignette,
+            };
+          } else {
+            next = {
+              ...next,
+              snapTurnDegrees: snapOrder[idx + 1],
+              comfortVignette: !state.settings.comfortVignette,
+            };
+          }
+        }
         state.settings = next;
         setSettings(next);
         saveSettings(next);
-        setUnlockToast(`VR · snap ${nextDeg}° · vignette ${next.comfortVignette ? "on" : "off"}`);
+        const turnLabel =
+          next.xrTurnMode === "smooth"
+            ? `smooth ${Math.round(next.xrSmoothTurnSpeed)}°/s`
+            : `snap ${next.snapTurnDegrees}°`;
+        setUnlockToast(`VR · ${turnLabel} · vignette ${next.comfortVignette ? "on" : "off"}`);
         window.setTimeout(() => setUnlockToast(""), 2500);
         break;
       }
@@ -5547,11 +5771,25 @@ export default function BradleysDarkSectorThreeJS() {
         </div>
       ) : null}
 
-      {!xrPresenting && hud.aiming && hud.activeWeapon === "pistol" ? (
-        <div data-testid="pistol-iron-sight" className="pointer-events-none absolute left-1/2 top-1/2 z-20 h-8 w-16 -translate-x-1/2 -translate-y-1/2">
-          <div className="absolute bottom-0 left-0 h-5 w-1.5 bg-slate-950 ring-1 ring-slate-300/70" />
-          <div className="absolute bottom-0 right-0 h-5 w-1.5 bg-slate-950 ring-1 ring-slate-300/70" />
-          <div className="absolute bottom-0 left-1/2 h-3 w-1 -translate-x-1/2 bg-slate-950 ring-1 ring-slate-200/80" />
+      {!xrPresenting && hud.aiming && (hud.activeWeapon === "pistol" || hud.activeWeapon === "smg") ? (
+        <div
+          data-testid={hud.activeWeapon === "smg" ? "smg-red-dot" : "pistol-iron-sight"}
+          className="pointer-events-none absolute left-1/2 top-1/2 z-20 -translate-x-1/2 -translate-y-1/2"
+        >
+          {hud.activeWeapon === "smg" ? (
+            <div className="relative h-16 w-16">
+              <div className="absolute inset-0 rounded-full border border-emerald-200/50 shadow-[0_0_12px_rgba(167,243,208,.25)]" />
+              <div className="absolute left-1/2 top-1/2 h-1.5 w-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-rose-400 shadow-[0_0_6px_rgba(251,113,133,.9)]" />
+              <div className="absolute left-1/2 top-[18%] h-[64%] w-px -translate-x-1/2 bg-emerald-50/55" />
+              <div className="absolute left-[18%] top-1/2 h-px w-[64%] -translate-y-1/2 bg-emerald-50/55" />
+            </div>
+          ) : (
+            <div className="relative h-8 w-16">
+              <div className="absolute bottom-0 left-0 h-5 w-1.5 bg-slate-950 ring-1 ring-slate-300/70" />
+              <div className="absolute bottom-0 right-0 h-5 w-1.5 bg-slate-950 ring-1 ring-slate-300/70" />
+              <div className="absolute bottom-0 left-1/2 h-3 w-1 -translate-x-1/2 bg-slate-950 ring-1 ring-slate-200/80" />
+            </div>
+          )}
         </div>
       ) : !xrPresenting && !hud.aiming ? (
         <>
@@ -6167,13 +6405,13 @@ export default function BradleysDarkSectorThreeJS() {
                 Quest / WebXR comfort
               </div>
               <label className="flex items-center justify-between gap-3">
-                <span>Snap turn</span>
+                <span>Turn mode</span>
                 <select
-                  value={settings.snapTurnDegrees}
+                  value={settings.xrTurnMode}
                   onChange={(e) => {
                     const next = {
                       ...settings,
-                      snapTurnDegrees: Number(e.target.value) as 30 | 45 | 90,
+                      xrTurnMode: e.target.value as "snap" | "smooth",
                     };
                     setSettings(next);
                     saveSettings(next);
@@ -6181,11 +6419,49 @@ export default function BradleysDarkSectorThreeJS() {
                   }}
                   className="bg-black/60 px-2 py-1"
                 >
-                  <option value={30}>30°</option>
-                  <option value={45}>45°</option>
-                  <option value={90}>90°</option>
+                  <option value="snap">Snap turn</option>
+                  <option value="smooth">Smooth turn</option>
                 </select>
               </label>
+              {settings.xrTurnMode === "snap" ? (
+                <label className="flex items-center justify-between gap-3">
+                  <span>Snap angle</span>
+                  <select
+                    value={settings.snapTurnDegrees}
+                    onChange={(e) => {
+                      const next = {
+                        ...settings,
+                        snapTurnDegrees: Number(e.target.value) as 30 | 45 | 90,
+                      };
+                      setSettings(next);
+                      saveSettings(next);
+                      if (gameRef.current) gameRef.current.settings = next;
+                    }}
+                    className="bg-black/60 px-2 py-1"
+                  >
+                    <option value={30}>30°</option>
+                    <option value={45}>45°</option>
+                    <option value={90}>90°</option>
+                  </select>
+                </label>
+              ) : (
+                <label className="flex items-center justify-between gap-3">
+                  <span>Smooth turn speed</span>
+                  <input
+                    type="range"
+                    min={60}
+                    max={180}
+                    step={5}
+                    value={settings.xrSmoothTurnSpeed}
+                    onChange={(e) => {
+                      const next = { ...settings, xrSmoothTurnSpeed: Number(e.target.value) };
+                      setSettings(next);
+                      saveSettings(next);
+                      if (gameRef.current) gameRef.current.settings = next;
+                    }}
+                  />
+                </label>
+              )}
               <label className="flex items-center justify-between gap-3">
                 <span>VR move speed</span>
                 <input

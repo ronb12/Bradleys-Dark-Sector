@@ -6,6 +6,10 @@ export type XRHudSnapshot = {
   ammo: number | string;
   weapon: string;
   score: number;
+  streak: number;
+  bestStreak: number;
+  sessionKills: number;
+  hostiles: number;
   wave: number;
   objective: string;
   contact: string;
@@ -53,6 +57,8 @@ export type ShotPose = {
 
 export type XRComfortSettings = {
   snapTurnDegrees: number;
+  xrTurnMode: "snap" | "smooth";
+  xrSmoothTurnSpeed: number;
   moveSpeed: number;
   comfortVignette: boolean;
   xrGraphics: "xr" | "inherit";

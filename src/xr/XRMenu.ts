@@ -47,9 +47,16 @@ export class XRMenu {
     const titleTex = makeLabelTexture("DARK SECTOR · VR", 768, 160);
     this.title = new THREE.Mesh(
       new THREE.PlaneGeometry(1.1, 0.23),
-      new THREE.MeshBasicMaterial({ map: titleTex, transparent: true, side: THREE.DoubleSide })
+      new THREE.MeshBasicMaterial({
+        map: titleTex,
+        transparent: true,
+        depthWrite: false,
+        depthTest: false,
+        side: THREE.DoubleSide,
+      })
     );
     this.title.position.set(0, 0.55, 0);
+    this.title.renderOrder = 1000;
     this.group.add(this.title);
 
     this.buildButtons("main");
@@ -88,15 +95,18 @@ export class XRMenu {
     defs.forEach((def, i) => {
       const tex = makeLabelTexture(def.label);
       const mesh = new THREE.Mesh(
-        new THREE.PlaneGeometry(0.95, 0.18),
+        new THREE.PlaneGeometry(1.05, 0.22),
         new THREE.MeshBasicMaterial({
           map: tex,
           color: def.color,
           transparent: true,
+          depthWrite: false,
+          depthTest: false,
           side: THREE.DoubleSide,
         })
       );
-      mesh.position.set(0, 0.28 - i * 0.22, 0.02);
+      mesh.position.set(0, 0.28 - i * 0.24, 0.02);
+      mesh.renderOrder = 1000;
       mesh.userData.menuAction = def.id;
       this.group.add(mesh);
       this.buttons.push({ id: def.id, label: def.label, mesh, baseColor: def.color });
@@ -142,36 +152,60 @@ export class XRMenu {
   }
 
   /**
-   * Raycast from controller; returns true if a button was activated this frame.
+   * Raycast from one or more controllers; returns true if a button was activated.
+   * Accepts an array so either hand can aim/click the menu on Quest.
    */
-  updateInteraction(controller: THREE.Object3D | null, selectPressed: boolean, selectEdge: boolean) {
-    if (!this.open || !controller) {
+  updateInteraction(
+    controller: THREE.Object3D | THREE.Object3D[] | null,
+    selectPressed: boolean,
+    selectEdge: boolean,
+  ) {
+    if (!this.open) {
       this.clearHover();
       return false;
     }
-    controller.updateMatrixWorld(true);
-    const origin = new THREE.Vector3();
-    const dir = new THREE.Vector3(0, 0, -1);
-    controller.getWorldPosition(origin);
-    dir.applyQuaternion(controller.getWorldQuaternion(new THREE.Quaternion())).normalize();
-    this.raycaster.set(origin, dir);
-
-    const hits = this.raycaster.intersectObjects(
-      this.buttons.map((b) => b.mesh),
-      false
+    const controllers = (Array.isArray(controller) ? controller : [controller]).filter(
+      (c): c is THREE.Object3D => Boolean(c),
     );
-    const hit = hits[0];
-    if (!hit) {
+    if (controllers.length === 0) {
       this.clearHover();
       return false;
     }
-    const btn = this.buttons.find((b) => b.mesh === hit.object) ?? null;
+
+    // Pose was just written on the group — refresh world matrices before hit-tests.
+    this.group.updateMatrixWorld(true);
+
+    const targets = this.buttons.map((b) => b.mesh);
+    let best: { btn: MenuButton; dist: number } | null = null;
+    const origin = new THREE.Vector3();
+    const dir = new THREE.Vector3();
+    const quat = new THREE.Quaternion();
+
+    for (const hand of controllers) {
+      hand.updateMatrixWorld(true);
+      hand.getWorldPosition(origin);
+      dir.set(0, 0, -1).applyQuaternion(hand.getWorldQuaternion(quat)).normalize();
+      this.raycaster.set(origin, dir);
+      // Menu sits ~2m ahead; keep a generous far plane for seated/standing variance.
+      this.raycaster.far = 8;
+      const hits = this.raycaster.intersectObjects(targets, false);
+      const hit = hits[0];
+      if (!hit) continue;
+      const btn = this.buttons.find((b) => b.mesh === hit.object);
+      if (!btn) continue;
+      if (!best || hit.distance < best.dist) best = { btn, dist: hit.distance };
+    }
+
+    if (!best) {
+      this.clearHover();
+      return false;
+    }
+
+    const btn = best.btn;
     if (btn !== this.hovered) {
       this.clearHover();
       this.hovered = btn;
-      if (btn) {
-        (btn.mesh.material as THREE.MeshBasicMaterial).color.setHex(0x67e8f9);
-      }
+      (btn.mesh.material as THREE.MeshBasicMaterial).color.setHex(0x67e8f9);
     }
     if (selectEdge && selectPressed && btn) {
       this.onAction(btn.id);

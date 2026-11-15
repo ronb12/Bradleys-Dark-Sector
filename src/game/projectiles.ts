@@ -1,5 +1,10 @@
 import * as THREE from "three";
-import { raycastColliders, segmentIntersectsSphere, type WorldHit } from "./collisionWorld";
+import {
+  evaluateBulletCover,
+  raycastColliders,
+  segmentIntersectsSphere,
+  type WorldHit,
+} from "./collisionWorld";
 
 export type BulletStepResult = {
   end: THREE.Vector3;
@@ -17,13 +22,25 @@ export function sweepBullet(
 ): BulletStepResult {
   const travel = velocity.length() * dt;
   const direction = velocity.clone().normalize();
-  const worldHit = raycastColliders(colliders, start, direction, travel);
-  const end = worldHit ? worldHit.point.clone() : start.clone().addScaledVector(velocity, dt);
-  const targetHit = Boolean(
-    targetCenter
-      && segmentIntersectsSphere(start, end, targetCenter, targetRadius),
-  );
-  return { end, worldHit, targetHit };
+  const unconstrainedEnd = start.clone().addScaledVector(velocity, dt);
+
+  if (targetCenter && segmentIntersectsSphere(start, unconstrainedEnd, targetCenter, targetRadius)) {
+    const toTarget = Math.max(0.05, targetCenter.distanceTo(start));
+    const cover = evaluateBulletCover(colliders, start, direction, toTarget);
+    if (!cover.blocked) {
+      return { end: unconstrainedEnd, worldHit: null, targetHit: true };
+    }
+    if (cover.impact) {
+      return { end: cover.impact.point.clone(), worldHit: cover.impact, targetHit: false };
+    }
+  }
+
+  const cover = evaluateBulletCover(colliders, start, direction, travel);
+  if (cover.blocked && cover.impact) {
+    return { end: cover.impact.point.clone(), worldHit: cover.impact, targetHit: false };
+  }
+  // Cleared parapets / punched light cover — keep the round in flight.
+  return { end: unconstrainedEnd, worldHit: null, targetHit: false };
 }
 
 export type GrenadeProjectile = {

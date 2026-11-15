@@ -7,8 +7,9 @@ Bradley’s Dark Sector supports Meta Quest 3 via browser WebXR (`immersive-vr`)
 | Input | Action |
 | --- | --- |
 | Left stick | Smooth move |
+| Left stick (hard push) | Sprint |
 | Right stick X | Snap turn (30° / 45° / 90°) |
-| Right trigger | Fire (hold M4 for full-auto) |
+| Either trigger | Fire (hold M4 for full-auto) |
 | Right grip | ADS / stabilize |
 | X | Reload |
 | Y | Open / close VR menu |
@@ -16,7 +17,6 @@ Bradley’s Dark Sector supports Meta Quest 3 via browser WebXR (`immersive-vr`)
 | B | Swap weapon |
 | Left stick click | Medkit |
 | Left grip | Crouch |
-| Left trigger | Sprint |
 
 ## Desktop / LAN testing
 

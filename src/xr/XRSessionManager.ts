@@ -175,7 +175,10 @@ export function createXRRuntime(
       }
       obj.visible = true;
     });
-    rig.exitSession(camera, scene);
+    // Pose restore for desktop happens in onPresentingChange(false).
+    if (runtime.rig.presentingAttached) {
+      runtime.rig.exitSession(camera, scene);
+    }
     applyXrGraphics(renderer, scene, false, runtime);
     input.setRaysVisible(false);
     hud.setVisible(false);
@@ -200,6 +203,9 @@ function applyXrGraphics(
 ) {
   if (entering) {
     const gfx = xrGraphicsConfig();
+    if (typeof renderer.xr.setFramebufferScaleFactor === "function") {
+      renderer.xr.setFramebufferScaleFactor(gfx.framebufferScale);
+    }
     // Do NOT call setPixelRatio here — WebXRManager already sets it to 1 when the
     // session starts; changing `_pixelRatio` mid-present can desync the XR layer
     // and read as a head-locked "screen" on Quest Browser.
@@ -237,7 +243,7 @@ function applyXrGraphics(
 }
 
 function softenObjectForXr(obj: THREE.Object3D) {
-  if (obj.name === "SkyDome") return;
+  if (obj.name === "SkyDome" || obj.name === "XRMenu" || obj.name === "XRHud") return;
   if (obj instanceof THREE.Mesh) {
     if (obj.material instanceof THREE.MeshBasicMaterial && obj.material.opacity < 0.08) {
       obj.visible = false;
@@ -260,18 +266,17 @@ function softenObjectForXr(obj: THREE.Object3D) {
 }
 
 /**
- * Player FPS / grip weapon meshes stay hidden — aim via desktop crosshair or
- * XRReticle. Mechanics still use activeWeapon + controller shot pose.
- * Flip to true only when shipping visible viewmodels again.
+ * Original Dark Sector weapons appear in desktop FPS and attach to the
+ * tracked controller in XR. Keep selection to one active mesh at a time.
  */
-export const PLAYER_WEAPON_MESHES_VISIBLE = false;
+export const PLAYER_WEAPON_MESHES_VISIBLE = true;
 
 /** Tag + force visibility for all player weapon view groups. */
-export function applyPlayerWeaponVisibility(weapons: Record<WeaponId, THREE.Group>) {
-  for (const weapon of Object.values(weapons)) {
+export function applyPlayerWeaponVisibility(weapons: Record<WeaponId, THREE.Group>, active: WeaponId = "m4") {
+  for (const [id, weapon] of Object.entries(weapons) as Array<[WeaponId, THREE.Group]>) {
     weapon.userData.playerViewmodel = true;
-    weapon.visible = PLAYER_WEAPON_MESHES_VISIBLE;
-    // Session-end restore must never re-show these while meshes are disabled.
+    weapon.visible = PLAYER_WEAPON_MESHES_VISIBLE && id === active;
+    // Non-active weapons remain parented but invisible, including after XR.
     delete weapon.userData._xrHiddenViewmodel;
   }
 }
@@ -283,29 +288,32 @@ export function attachWeaponsToGrip(
 ) {
   const grip = runtime.input.getWeaponGrip();
   if (!grip) return false;
-  for (const weapon of Object.values(weapons)) {
+  for (const [id, weapon] of Object.entries(weapons) as Array<[WeaponId, THREE.Group]>) {
     delete weapon.userData._xrHiddenViewmodel;
     if (weapon.parent !== grip) grip.add(weapon);
+    // Parent visibility selects the active controller-held model.
+    const show = PLAYER_WEAPON_MESHES_VISIBLE && id === active;
+    weapon.visible = show;
     weapon.traverse((child) => {
       if (child instanceof THREE.Mesh) {
         child.castShadow = false;
+        // Parent weapon visibility selects the active model. Keep child meshes
+        // visible so switching out of XR does not leave empty gun geometry.
+        child.visible = true;
         delete child.userData._xrHiddenViewmodel;
       }
     });
   }
-  // Keep physical grip-local poses for shot-origin consistency even while meshes
-  // are invisible (crosshair / XRReticle carry aiming feedback).
+  // Grip-local poses tuned so the barrel follows the hand controller ray.
   weapons.m4.scale.setScalar(0.58);
-  weapons.m4.position.set(0, -0.11, -0.29);
-  weapons.m4.rotation.set(-0.16, 0, 0);
+  weapons.m4.position.set(0, -0.06, -0.22);
+  weapons.m4.rotation.set(-0.08, 0, 0);
   weapons.smg.scale.set(0.5, 0.5, 0.44);
-  weapons.smg.position.set(0, -0.1, -0.24);
-  weapons.smg.rotation.set(-0.14, 0, 0);
+  weapons.smg.position.set(0, -0.05, -0.18);
+  weapons.smg.rotation.set(-0.06, 0, 0);
   weapons.pistol.scale.setScalar(0.68);
-  weapons.pistol.position.set(0, -0.13, -0.16);
-  weapons.pistol.rotation.set(-0.12, 0, 0);
-  void active;
-  applyPlayerWeaponVisibility(weapons);
+  weapons.pistol.position.set(0, -0.04, -0.12);
+  weapons.pistol.rotation.set(-0.04, 0, 0);
   runtime.weaponsOnGrip = true;
   return true;
 }
@@ -313,7 +321,8 @@ export function attachWeaponsToGrip(
 export function detachWeaponsFromGrip(
   runtime: XRRuntime,
   camera: THREE.PerspectiveCamera,
-  weapons: Record<WeaponId, THREE.Group>
+  weapons: Record<WeaponId, THREE.Group>,
+  active: WeaponId = "m4"
 ) {
   camera.add(...Object.values(weapons));
   weapons.m4.position.set(0.55, -0.55, -1.1);
@@ -325,7 +334,7 @@ export function detachWeaponsFromGrip(
   weapons.m4.scale.setScalar(1);
   weapons.smg.scale.set(0.82, 0.82, 0.72);
   weapons.pistol.scale.setScalar(1);
-  applyPlayerWeaponVisibility(weapons);
+  applyPlayerWeaponVisibility(weapons, active);
   runtime.weaponsOnGrip = false;
 }
 

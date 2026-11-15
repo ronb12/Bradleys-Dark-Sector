@@ -14,6 +14,58 @@
 - Use: Primary rigged soldier. The source faces +Z and is wrapped 180 degrees
   at load so gameplay consistently uses local -Z as character/weapon forward.
 
+## Worker and Punk (enemy visual variants, same rig as SWAT)
+
+- Files: `public/models/quaternius-worker.glb`, `public/models/quaternius-punk.glb`
+- Source: [Worker](https://poly.pizza/m/Yg2bQZO6Hj) and [Punk](https://poly.pizza/m/BTALZymknF)
+  by Quaternius, from the same
+  [Ultimate Modular Men Pack](https://quaternius.com/packs/ultimatemodularcharacters.html)
+  as the SWAT model above
+- Direct source files:
+  - `https://static.poly.pizza/3a5f3056-ffe6-42eb-bd52-122afcbd22b2.glb` (Worker)
+  - `https://static.poly.pizza/e56f23b5-3270-406f-8924-f77cad980c43.glb` (Punk)
+- License: [CC0 1.0 Universal](https://creativecommons.org/publicdomain/zero/1.0/)
+- Author: Quaternius
+- SHA-256:
+  - Worker: `9c28614f465b7dc105f908c20c22fc045f4b07caf8c5ef0e9f8049eceb6dd38d`
+  - Punk: `94afa8718093cc7f9e51cdc0b35f4432c1c2f1901177f98fbbbcb4c6fd79b163`
+- Verified identical skeleton (85 nodes) and all 24 animation clip names as
+  `quaternius-swat.glb` — confirmed byte-identical clip names before wiring in,
+  since the pack's characters share one rig by design (4 swappable body parts
+  per character). No animation or weapon-bone remapping was needed.
+- Use: Worker gives the Scout enemy type a distinct fast/lightly-equipped
+  silhouette; Punk is mixed in as a random reskin of some Rifleman spawns for
+  squad variety. Both go through the same matte combat-readability tint as
+  every other enemy.
+
+## Watch Tower (decorative compound dressing)
+
+- File: `public/models/env/quaternius-watchtower.glb`
+- Source: [Watch Tower by Quaternius](https://poly.pizza/m/VJZZW37Vsk)
+- Direct source file: `https://static.poly.pizza/af9ebe34-f519-48eb-9185-3e2c76405697.glb`
+- License: [CC0 1.0 Universal](https://creativecommons.org/publicdomain/zero/1.0/)
+- Author: Quaternius
+- SHA-256: `b43938378b0b38940fbf529ee78c3ae1ecae52486c06d9de1101bbb220ff71fc`
+- Use: Additional background/skyline watchtower silhouettes placed away from
+  the four corner watchtowers. The corner towers are load-bearing gameplay
+  structures (tuned collision volumes, mounted floodlights) built procedurally
+  in `environment.ts`/`BradleysDarkSectorThreeJS.tsx` and were deliberately
+  left alone — this model only adds new decorative structures, it does not
+  replace them.
+
+## Tactical glove (VR controller hands)
+
+- File: `public/models/quaternius-glove.glb`
+- Source: [Glove by Quaternius](https://poly.pizza/m/l1zv4LaA4I)
+- Direct source file: `https://static.poly.pizza/5bcc01d6-1f10-4e50-837f-1b53ba398c60.glb`
+- License: [CC0 1.0 Universal](https://creativecommons.org/publicdomain/zero/1.0/)
+- Author: Quaternius
+- SHA-256: `e4cfc171bab24a5b2df400f142b06b43a25a67c828870ffceadebc5a917280a6`
+- Use: Static (non-rigged) glove mesh attached to each XR controller grip,
+  mirrored for left/right, replacing the bare default
+  `XRControllerModelFactory` controller-ring visual so VR hands read as gloved
+  hands instead of floating plastic controllers.
+
 ## Legacy Mixamo soldier (bundled fallback source, not currently loaded)
 
 - File: `public/models/mixamo-soldier.glb`

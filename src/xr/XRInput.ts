@@ -1,8 +1,15 @@
 import * as THREE from "three";
 import { XRControllerModelFactory } from "three/addons/webxr/XRControllerModelFactory.js";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import type { XRFrameInput, ShotPose } from "./types";
 
 type Handedness = "left" | "right" | "none";
+
+/** CC0 Quaternius glove (see ASSET_LICENSES.md) — replaces the bare default
+ * controller-ring visual so VR reads as gloved hands, not floating plastic. */
+const GLOVE_MODEL_URL = "/models/quaternius-glove.glb";
+/** Source export is millimeter-scale; normalize to a plausible hand length. */
+const GLOVE_TARGET_LENGTH = 0.1;
 
 type ControllerSlot = {
   index: number;
@@ -15,9 +22,10 @@ type ControllerSlot = {
 };
 
 const STICK_DEADZONE = 0.18;
-const SNAP_DEADZONE = 0.7;
-const SNAP_RESET = 0.3;
-const TRIGGER_THRESHOLD = 0.18;
+const SNAP_DEADZONE = 0.55;
+const SNAP_RESET = 0.28;
+const SMOOTH_TURN_DEADZONE = 0.22;
+const TRIGGER_THRESHOLD = 0.12;
 
 /**
  * Quest Touch / xr-standard mapping:
@@ -25,12 +33,12 @@ const TRIGGER_THRESHOLD = 0.18;
  * axes[2]/[3] thumbstick X/Y
  *
  * Defaults (right-hand weapon):
- * - Left stick: move
- * - Right stick X: snap turn
- * - Right trigger: fire
+ * - Left stick: move · push stick hard: sprint
+ * - Right stick X: snap turn or smooth turn (settings)
+ * - Either trigger: fire (Quest 3 Touch Plus)
  * - Right grip: ADS
  * - X: reload · Y: menu · A: interact · B: swap · right stick click: grenade
- * - Left stick click: medkit · Left grip: crouch · Left trigger: sprint
+ * - Left stick click: medkit · Left grip: crouch
  */
 export class XRInput {
   private slots: ControllerSlot[] = [];
@@ -46,11 +54,14 @@ export class XRInput {
   private sessionFireHeld = false;
   private sessionSelectSource: XRInputSource | null = null;
   private boundSession: XRSession | null = null;
+  /** Default per-grip visual from XRControllerModelFactory — hidden once the glove loads. */
+  private controllerModels: THREE.Object3D[] = [];
+  private gloveTemplate: THREE.Object3D | null = null;
   private onSessionSelectStart = (event: Event) => {
     const source = (event as XRInputSourceEvent).inputSource;
     if (!source || source.targetRayMode === "gaze") return;
-    // Prefer right; if Quest reports "none", still treat as weapon fire.
-    if (source.handedness === "left") return;
+    // Quest 3 / Browser: accept either controller trigger as fire. Handedness is
+    // often "none" briefly, and left-trigger-only players were previously ignored.
     this.sessionFireHeld = true;
     this.sessionSelectSource = source;
   };
@@ -68,7 +79,9 @@ export class XRInput {
     for (let i = 0; i < 2; i += 1) {
       const target = renderer.xr.getController(i);
       const grip = renderer.xr.getControllerGrip(i);
-      grip.add(this.factory.createControllerModel(grip));
+      const controllerModel = this.factory.createControllerModel(grip);
+      grip.add(controllerModel);
+      this.controllerModels.push(controllerModel);
       // Parent to the locomotion rig — same space as the XR camera — not the scene root.
       // Scene parenting leaves controllers in raw reference-space while the rig moves/yaws,
       // which reads as teleport jumps, weapon lag, and snap-turn desync on Quest.
@@ -114,6 +127,55 @@ export class XRInput {
       });
       this.slots.push(slot);
     }
+
+    void this.loadGloveModel();
+  }
+
+  /**
+   * Best-effort glove load — on success, hides the default controller-ring
+   * model on every grip and attaches a normalized glove clone instead. On
+   * failure the default XRControllerModelFactory visuals are left in place.
+   */
+  private loadGloveModel() {
+    const loader = new GLTFLoader();
+    loader.load(
+      GLOVE_MODEL_URL,
+      (gltf) => {
+        const scene = gltf.scene;
+        scene.updateMatrixWorld(true);
+        const box = new THREE.Box3().setFromObject(scene);
+        const size = box.getSize(new THREE.Vector3());
+        const longest = Math.max(size.x, size.y, size.z) || 1;
+        const scale = GLOVE_TARGET_LENGTH / longest;
+        const center = box.getCenter(new THREE.Vector3());
+        scene.scale.setScalar(scale);
+        // Re-center in scaled space so the mesh pivots near the grip origin
+        // rather than around whatever offset the source file was authored at.
+        scene.position.set(-center.x * scale, -center.y * scale, -center.z * scale);
+        this.gloveTemplate = scene;
+        this.applyGlovesToGrips();
+      },
+      undefined,
+      () => {
+        // Keep default controller visuals — no glove this session.
+      },
+    );
+  }
+
+  private applyGlovesToGrips() {
+    if (!this.gloveTemplate) return;
+    this.slots.forEach((slot, i) => {
+      const controllerModel = this.controllerModels[i];
+      if (controllerModel) controllerModel.visible = false;
+      if (slot.grip.getObjectByName("XRGlove")) return;
+      const glove = this.gloveTemplate!.clone(true);
+      glove.name = "XRGlove";
+      // Loose default pose wrapping the grip near the weapon mount point —
+      // matches the -Z forward convention used by attachWeaponsToGrip.
+      glove.rotation.set(0, Math.PI, 0);
+      glove.position.set(0, -0.02, 0.02);
+      slot.grip.add(glove);
+    });
   }
 
   /** Bind session-level select listeners once an immersive session exists. */
@@ -141,6 +203,43 @@ export class XRInput {
 
   getUiRayTarget(): THREE.Group | null {
     return this.weaponSlot()?.target ?? this.slotByHand("left")?.target ?? this.slots[0]?.target ?? null;
+  }
+
+  /** Controllers that can aim the VR menu (both hands). */
+  getUiRayTargets(): THREE.Group[] {
+    this.syncHandednessFromSession();
+    const out: THREE.Group[] = [];
+    for (const slot of this.slots) {
+      if (!out.includes(slot.target)) out.push(slot.target);
+    }
+    return out;
+  }
+
+  /**
+   * Menu select from either controller. Quest users often point with the left
+   * hand while gameplay fire is bound to the right trigger only.
+   */
+  getUiSelectState(prevDown: boolean): { pressed: boolean; edge: boolean; source: THREE.Group | null } {
+    this.syncHandednessFromSession();
+    let pressed = this.sessionFireHeld;
+    let source: THREE.Group | null = null;
+    for (const slot of this.slots) {
+      const pad = slot.inputSource?.gamepad
+        ?? (slot.target as THREE.Object3D & { gamepad?: Gamepad }).gamepad
+        ?? null;
+      const down =
+        slot.selectHeld
+        || this.value(pad, 0) > TRIGGER_THRESHOLD
+        || this.pressed(pad, 0);
+      if (down) {
+        pressed = true;
+        source = slot.target;
+        // Prefer the hand that is actively selecting for the aim ray.
+        if (slot.selectHeld) break;
+      }
+    }
+    if (!source && pressed) source = this.getUiRayTarget();
+    return { pressed, edge: pressed && !prevDown, source };
   }
 
   setRaysVisible(visible: boolean) {
@@ -232,8 +331,12 @@ export class XRInput {
   }
 
   private axisPair(gp: Gamepad | null): { x: number; y: number } {
-    if (!gp || gp.axes.length < 4) return { x: 0, y: 0 };
-    return { x: gp.axes[2] ?? 0, y: gp.axes[3] ?? 0 };
+    if (!gp?.axes?.length) return { x: 0, y: 0 };
+    // xr-standard thumbstick is usually axes[2]/[3]; some runtimes only expose [0]/[1].
+    if (gp.axes.length >= 4) {
+      return { x: gp.axes[2] ?? 0, y: gp.axes[3] ?? 0 };
+    }
+    return { x: gp.axes[0] ?? 0, y: gp.axes[1] ?? 0 };
   }
 
   private pressed(gp: Gamepad | null, index: number) {
@@ -244,26 +347,68 @@ export class XRInput {
     return gp?.buttons[index]?.value ?? 0;
   }
 
-  private weaponTriggerDown(weaponPad: Gamepad | null) {
-    const slot = this.weaponSlot();
-    return Boolean(
-      slot?.selectHeld ||
-        this.sessionFireHeld ||
-        this.value(weaponPad, 0) > TRIGGER_THRESHOLD ||
-        this.pressed(weaponPad, 0)
-    );
+  private triggerDownOnPad(gp: Gamepad | null) {
+    if (!gp) return false;
+    // Quest 3 analog trigger: value rises before `pressed` flips; use both.
+    return this.value(gp, 0) > TRIGGER_THRESHOLD || this.pressed(gp, 0);
   }
 
-  poll(snapDegrees: number): XRFrameInput & { snapRadians: number } {
+  /**
+   * Fire from either Quest controller trigger. Handedness / gamepad binding is
+   * flaky on Quest Browser, so we OR select events, session select, and every
+   * live inputSource gamepad — not only the resolved "right" slot.
+   */
+  private weaponTriggerDown(weaponPad: Gamepad | null) {
+    let live = false;
+
+    for (const slot of this.slots) {
+      if (slot.selectHeld) live = true;
+      const pad =
+        slot.inputSource?.gamepad
+        ?? (slot.target as THREE.Object3D & { gamepad?: Gamepad }).gamepad
+        ?? null;
+      if (this.triggerDownOnPad(pad)) live = true;
+    }
+
+    if (this.triggerDownOnPad(weaponPad)) live = true;
+    if (this.triggerDownOnPad(this.readGamepad("right"))) live = true;
+    if (this.triggerDownOnPad(this.readGamepad("left"))) live = true;
+
+    const session = this.renderer.xr.getSession();
+    if (session) {
+      for (const source of session.inputSources) {
+        if (source.targetRayMode === "gaze") continue;
+        if (this.triggerDownOnPad(source.gamepad ?? null)) live = true;
+      }
+    }
+
+    // Drop sticky session select if nothing is actually held (missed selectend).
+    if (!live) this.sessionFireHeld = false;
+    return live || this.sessionFireHeld;
+  }
+
+  poll(opts: {
+    snapDegrees: number;
+    turnMode?: "snap" | "smooth";
+    smoothTurnSpeed?: number;
+    dt?: number;
+  }): XRFrameInput & { snapRadians: number; turnRadians: number; lookX: number } {
+    const snapDegrees = opts.snapDegrees;
+    const turnMode = opts.turnMode ?? "snap";
+    const smoothTurnSpeed = opts.smoothTurnSpeed ?? 110;
+    const dt = Math.max(0, opts.dt ?? 0);
+
     this.syncHandednessFromSession();
     const left = this.readGamepad("left");
     const right = this.readGamepad("right");
     const weaponPad = this.readWeaponGamepad() ?? right;
+    // Prefer dedicated right pad for look/turn; fall back to weapon pad.
+    const lookPad = right ?? weaponPad;
     const leftStick = this.axisPair(left);
-    const rightStick = this.axisPair(right ?? weaponPad);
+    const rightStick = this.axisPair(lookPad);
 
     let moveX = Math.abs(leftStick.x) > STICK_DEADZONE ? leftStick.x : 0;
-    // Stick forward is negative Y on Quest / xr-standard.
+    // xr-standard: stick forward = negative Y. Negate so +moveY walks where you look.
     let moveY = Math.abs(leftStick.y) > STICK_DEADZONE ? -leftStick.y : 0;
     const mag = Math.hypot(moveX, moveY);
     if (mag > 1) {
@@ -271,13 +416,27 @@ export class XRInput {
       moveY /= mag;
     }
 
+    const lookXRaw = rightStick.x;
+    const lookX = Math.abs(lookXRaw) > (turnMode === "smooth" ? SMOOTH_TURN_DEADZONE : SNAP_DEADZONE)
+      ? lookXRaw
+      : 0;
+
     let snapTurn: -1 | 0 | 1 = 0;
     let snapRadians = 0;
-    if (this.canSnap && Math.abs(rightStick.x) > SNAP_DEADZONE) {
-      snapTurn = rightStick.x > 0 ? 1 : -1;
+    let turnRadians = 0;
+
+    if (turnMode === "smooth") {
+      if (lookX !== 0 && dt > 0) {
+        // Stick right → clockwise (negative yaw in Three.js Y-up right-handed).
+        turnRadians = -lookX * THREE.MathUtils.degToRad(smoothTurnSpeed) * dt;
+      }
+      this.canSnap = true;
+    } else if (this.canSnap && Math.abs(lookXRaw) > SNAP_DEADZONE) {
+      snapTurn = lookXRaw > 0 ? 1 : -1;
       snapRadians = -snapTurn * THREE.MathUtils.degToRad(snapDegrees);
+      turnRadians = snapRadians;
       this.canSnap = false;
-    } else if (Math.abs(rightStick.x) < SNAP_RESET) {
+    } else if (Math.abs(lookXRaw) < SNAP_RESET) {
       this.canSnap = true;
     }
 
@@ -297,14 +456,18 @@ export class XRInput {
 
     this.prev = { x: xBtn, y: yBtn, a: aBtn, b: bBtn, stick: stickClick, rightStick: rightStickClick };
 
+    // Sprint: push left stick hard (left trigger is fire on Quest 3 now).
+    const sprint = mag > 0.82;
+
     return {
       moveX,
       moveY,
       snapTurn,
       snapRadians,
-      // Quest select-event + session select + gamepad — do not require handedness === "right".
+      turnRadians,
+      lookX,
       fire: this.weaponTriggerDown(weaponPad),
-      ads: this.value(weaponPad, 1) > 0.5 || this.pressed(weaponPad, 1),
+      ads: this.value(weaponPad, 1) > 0.5 || this.pressed(weaponPad, 1) || this.value(right, 1) > 0.5,
       reload,
       interact,
       swap,
@@ -312,19 +475,29 @@ export class XRInput {
       medkit,
       crouch: this.pressed(left, 1),
       menu,
-      sprint: this.value(left, 0) > 0.55,
+      sprint,
     };
   }
 
   getShotPose(): ShotPose | null {
-    const source = this.getWeaponGrip() ?? this.getWeaponTarget();
-    if (!source) return null;
-    source.updateMatrixWorld(true);
+    // Quest grip space aims along the handle (often skyward). Target-ray space is
+    // the pointing direction the player expects when pulling the trigger.
+    this.syncHandednessFromSession();
+    for (const slot of this.slots) {
+      slot.target.updateMatrixWorld(true);
+      slot.grip.updateMatrixWorld(true);
+    }
+    const aim = this.getWeaponTarget() ?? this.getWeaponGrip();
+    if (!aim) return null;
+    const grip = this.getWeaponGrip();
     const origin = new THREE.Vector3();
-    source.getWorldPosition(origin);
-    source.getWorldQuaternion(this.tmpQuat);
+    (grip ?? aim).getWorldPosition(origin);
+    aim.getWorldQuaternion(this.tmpQuat);
     const direction = new THREE.Vector3(0, 0, -1).applyQuaternion(this.tmpQuat).normalize();
-    origin.addScaledVector(direction, 0.22);
+    // Muzzle sits ahead of the grip along the aim ray (controller tip / barrel).
+    origin.addScaledVector(direction, 0.28);
+    // Slight drop so hipfire isn't sky-high when the wrist rolls.
+    origin.y -= 0.02;
     const right = new THREE.Vector3(1, 0, 0).applyQuaternion(this.tmpQuat).normalize();
     const up = new THREE.Vector3(0, 1, 0).applyQuaternion(this.tmpQuat).normalize();
     return { origin, direction, right, up };

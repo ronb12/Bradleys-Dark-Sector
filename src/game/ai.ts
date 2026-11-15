@@ -36,6 +36,14 @@ export type AiContext = {
 
 let nextSquadId = 1;
 
+function coverSlotBlocked(colliders: THREE.Box3[], x: number, z: number) {
+  const body = new THREE.Box3().setFromCenterAndSize(
+    new THREE.Vector3(x, 1, z),
+    new THREE.Vector3(0.9, 1.9, 0.9),
+  );
+  return colliders.some((collider) => collider.intersectsBox(body));
+}
+
 export function buildCoverPointsFromColliders(colliders: THREE.Box3[]): CoverPoint[] {
   const points: CoverPoint[] = [];
   for (const box of colliders) {
@@ -49,15 +57,17 @@ export function buildCoverPointsFromColliders(colliders: THREE.Box3[]): CoverPoi
     if (size.x > 14 || size.z > 14) continue;
     const footprint = size.x * size.z;
     const combatProp = footprint < 18;
+    // Stand-off past the AABB face + soldier body half-width so AI can actually arrive.
     const offsets: Array<[number, number]> = [
-      [0, size.z * 0.55 + 0.95],
-      [0, -(size.z * 0.55 + 0.95)],
-      [size.x * 0.55 + 0.95, 0],
-      [-(size.x * 0.55 + 0.95), 0],
+      [0, size.z * 0.55 + 1.25],
+      [0, -(size.z * 0.55 + 1.25)],
+      [size.x * 0.55 + 1.25, 0],
+      [-(size.x * 0.55 + 1.25), 0],
     ];
     for (const [ox, oz] of offsets) {
       const x = center.x + ox;
       const z = center.z + oz;
+      if (coverSlotBlocked(colliders, x, z)) continue;
       const normal = new THREE.Vector2(ox, oz).normalize();
       const tangent = new THREE.Vector2(-normal.y, normal.x);
       // Prefer mid-yard fighting positions over outer skirts.
@@ -71,10 +81,10 @@ export function buildCoverPointsFromColliders(colliders: THREE.Box3[]): CoverPoi
         quality: heightScore + yardBias + propBonus,
         normalX: normal.x,
         normalZ: normal.y,
-        peekLeftX: x + tangent.x * 0.72,
-        peekLeftZ: z + tangent.y * 0.72,
-        peekRightX: x - tangent.x * 0.72,
-        peekRightZ: z - tangent.y * 0.72,
+        peekLeftX: x + tangent.x * 0.85,
+        peekLeftZ: z + tangent.y * 0.85,
+        peekRightX: x - tangent.x * 0.85,
+        peekRightZ: z - tangent.y * 0.85,
       });
     }
   }
@@ -97,9 +107,15 @@ export function assignSquads(enemies: THREE.Group[], maxSquad = 4): Squad[] {
     const roles: AiRole[] = ["assault", "flanker", "support", "suppressor"];
     members.forEach((m, idx) => {
       m.userData.squadId = nextSquadId;
-      m.userData.aiRole = roles[idx % roles.length];
+      // Commanders lead from the front — never park them as support statues.
+      const typeName = String(m.userData.enemyType || "");
+      m.userData.aiRole =
+        typeName === "Commander" || typeName === "Heavy"
+          ? (idx % 2 === 0 ? "assault" : "flanker")
+          : roles[idx % roles.length];
       m.userData.coverTarget = null as CoverPoint | null;
       m.userData.coverArrivedAt = 0;
+      m.userData.coverForceArrive = false;
       m.userData.coverLockUntil = 0;
       m.userData.repositionUntil = 0;
       m.userData.retreatUntil = 0;
@@ -111,7 +127,7 @@ export function assignSquads(enemies: THREE.Group[], maxSquad = 4): Squad[] {
       m.userData.nextGrenadeAt = performance.now() / 1000 + 70 + Math.random() * 50;
       m.userData.peekSide = idx % 2 === 0 ? 1 : -1;
       m.userData.peekUntil = 0;
-      m.userData.pushBias = 0;
+      m.userData.pushBias = typeName === "Commander" ? 0.85 : 0;
     });
     squads.push({
       id: nextSquadId++,
@@ -133,6 +149,7 @@ function nearestCover(
   preferAway = false,
   options?: {
     exclude?: CoverPoint | null;
+    ban?: CoverPoint | null;
     preferCloser?: boolean;
     preferFlank?: number;
   }
@@ -140,12 +157,14 @@ function nearestCover(
   let best: CoverPoint | null = null;
   let bestScore = -Infinity;
   const exclude = options?.exclude ?? null;
+  const ban = options?.ban ?? null;
   const preferCloser = Boolean(options?.preferCloser);
   const preferFlank = options?.preferFlank ?? 0;
   const fromPlayerDist = Math.hypot(from.x - player.x, from.z - player.z);
   for (const c of covers) {
     if (exclude && c === exclude) continue;
     if (exclude && Math.hypot(c.x - exclude.x, c.z - exclude.z) < 2.2) continue;
+    if (ban && (c === ban || Math.hypot(c.x - ban.x, c.z - ban.z) < 2.4)) continue;
     const toPlayer = Math.hypot(c.x - player.x, c.z - player.z);
     const toSelf = Math.hypot(c.x - from.x, c.z - from.z);
     if (toSelf < 0.55) continue;
@@ -285,9 +304,21 @@ export function computeEnemySteer(enemy: THREE.Group, ctx: AiContext): AiSteerRe
   // Finite cover dwell — never refresh lock forever while planted (that froze
   // spawn-at-cover soldiers in place for the whole fight).
   const currentCover = enemy.userData.coverTarget as CoverPoint | null;
+  const coverForceArrive = Boolean(enemy.userData.coverForceArrive);
+  // Forced arrivals are brief fighting pauses — never permanent statues.
+  if (
+    coverForceArrive
+    && enemy.userData.coverArrivedAt
+    && now - enemy.userData.coverArrivedAt > 1.25
+  ) {
+    enemy.userData.coverForceArrive = false;
+  }
   const atCurrentCover = Boolean(
     currentCover
-    && Math.hypot(currentCover.x - enemy.position.x, currentCover.z - enemy.position.z) <= 1.75
+    && (
+      Boolean(enemy.userData.coverForceArrive)
+      || Math.hypot(currentCover.x - enemy.position.x, currentCover.z - enemy.position.z) <= 2.45
+    )
   );
   if (atCurrentCover) {
     if (!enemy.userData.coverArrivedAt) enemy.userData.coverArrivedAt = now;
@@ -297,6 +328,13 @@ export function computeEnemySteer(enemy: THREE.Group, ctx: AiContext): AiSteerRe
   const dwellExpired =
     atCurrentCover
     && (now - (enemy.userData.coverArrivedAt || now)) >= coverDwellSeconds(role, push);
+  const banCover =
+    now < (enemy.userData.coverBanUntil || 0)
+      ? (enemy.userData.bannedCover as CoverPoint | null)
+      : null;
+  if (now >= (enemy.userData.coverBanUntil || 0)) {
+    enemy.userData.bannedCover = null;
+  }
   const forceAdvance =
     !retreating
     && !suppressed
@@ -317,6 +355,7 @@ export function computeEnemySteer(enemy: THREE.Group, ctx: AiContext): AiSteerRe
       false,
       {
         exclude: currentCover,
+        ban: banCover,
         preferCloser: distance > preferred - 0.5 || push > 0.5,
         preferFlank: role === "flanker" || role === "assault" ? flankSign : 0,
       }
@@ -325,12 +364,14 @@ export function computeEnemySteer(enemy: THREE.Group, ctx: AiContext): AiSteerRe
       enemy.userData.coverTarget = next;
       enemy.userData.coverLockUntil = now + 3.2 + Math.random() * 2.2;
       enemy.userData.coverArrivedAt = 0;
+      enemy.userData.coverForceArrive = false;
       enemy.userData.repositionUntil = now + 2.4 + Math.random() * 1.6;
     } else if (dwellExpired || push > 0.85) {
       // No alternate prop — clear lock so open-field flank/strafe can resume.
       enemy.userData.coverTarget = null;
       enemy.userData.coverLockUntil = 0;
       enemy.userData.coverArrivedAt = 0;
+      enemy.userData.coverForceArrive = false;
       enemy.userData.repositionUntil = now + 1.8 + Math.random();
     }
   } else if (!enemy.userData.coverTarget || now >= (enemy.userData.coverLockUntil || 0)) {
@@ -342,6 +383,7 @@ export function computeEnemySteer(enemy: THREE.Group, ctx: AiContext): AiSteerRe
       minimum,
       retreating,
       {
+        ban: banCover,
         preferCloser: !retreating && distance > preferred + 1,
         preferFlank: role === "flanker" ? flankSign : 0,
       }
@@ -350,6 +392,7 @@ export function computeEnemySteer(enemy: THREE.Group, ctx: AiContext): AiSteerRe
       enemy.userData.coverTarget = cover;
       enemy.userData.coverLockUntil = now + 3.5 + Math.random() * 2.5;
       enemy.userData.coverArrivedAt = 0;
+      enemy.userData.coverForceArrive = false;
     }
   }
 
@@ -358,8 +401,15 @@ export function computeEnemySteer(enemy: THREE.Group, ctx: AiContext): AiSteerRe
   let intent: AiSteerResult["intent"] = "hold";
 
   if (suppressed && cover) {
-    intent = "cover";
-    steer.set(cover.x - enemy.position.x, 0, cover.z - enemy.position.z);
+    if (atCurrentCover) {
+      // Already pressed into this prop — hold/peek instead of moonwalking into the collider.
+      intent = "hold";
+      wantCover = true;
+      steer.set(0, 0, 0);
+    } else {
+      intent = "cover";
+      steer.set(cover.x - enemy.position.x, 0, cover.z - enemy.position.z);
+    }
   } else if (retreating) {
     intent = "retreat";
     steer.copy(toward).multiplyScalar(-1).addScaledVector(flankDir, 0.55);
@@ -377,7 +427,10 @@ export function computeEnemySteer(enemy: THREE.Group, ctx: AiContext): AiSteerRe
     );
     // Once a soldier reaches its assigned fighting position, work that prop
     // briefly (peek/hold), then relocate — never plant for the whole fight.
-    const atCover = Boolean(cover && coverDistance <= 1.75);
+    const atCover = Boolean(
+      cover
+      && (Boolean(enemy.userData.coverForceArrive) || coverDistance <= 2.45)
+    );
 
     if (distance < minimum) {
       // Hard separation guard: ranged soldiers backpedal instead of crowding.
@@ -394,15 +447,23 @@ export function computeEnemySteer(enemy: THREE.Group, ctx: AiContext): AiSteerRe
         enemy.userData.peekUntil = now + 0.55 + Math.random() * 0.85;
       }
       const peeking = (enemy.userData.suppression || 0) < 0.42 && now < enemy.userData.peekUntil - 0.18;
+      const typeName = String(enemy.userData.enemyType || "");
+      const keepMoving =
+        role === "flanker"
+        || role === "assault"
+        || typeName === "Commander"
+        || typeName === "Heavy"
+        || push > 0.25
+        || Boolean(enemy.userData.coverForceArrive);
       if (peeking) {
         intent = "strafe";
         const tx = enemy.userData.peekSide > 0 ? cover!.peekRightX : cover!.peekLeftX;
         const tz = enemy.userData.peekSide > 0 ? cover!.peekRightZ : cover!.peekLeftZ;
         steer.set(tx - enemy.position.x, 0, tz - enemy.position.z);
-      } else if (role === "flanker" || push > 0.4) {
+      } else if (keepMoving) {
         // Keep feet moving between peeks so squads don't freeze on sandbags.
         intent = "strafe";
-        steer.copy(flankDir).multiplyScalar(0.65);
+        steer.copy(flankDir).multiplyScalar(typeName === "Commander" ? 0.85 : 0.65);
       } else {
         intent = "hold";
         steer.set(0, 0, 0);

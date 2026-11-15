@@ -273,7 +273,7 @@ function makeDistanceMarker(meters: number): THREE.Group {
   );
   hash.position.set(0, 1.05, 0.04);
   g.add(hash);
-  const stripeCount = meters >= 50 ? 3 : meters >= 25 ? 2 : 1;
+  const stripeCount = meters >= 75 ? 4 : meters >= 50 ? 3 : meters >= 25 ? 2 : 1;
   for (let i = 0; i < stripeCount; i += 1) {
     const s = new THREE.Mesh(
       new THREE.BoxGeometry(0.12, 0.22, 0.07),
@@ -466,220 +466,286 @@ function buildRangeGeometry(root: THREE.Group, colliders: THREE.Box3[]) {
   const concrete = mat(0x6a6558, 0.94, 0.03);
   const dark = mat(0x2e322c, 0.9, 0.05);
   const berm = mat(0x7a6a48, 0.96, 0.02);
+  const bermDark = mat(0x5c5138, 0.97, 0.02);
   const metal = mat(0x555850, 0.55, 0.55);
   const paint = mat(0xc9a227, 0.65, 0.2);
   const asphalt = mat(0x1c2022, 0.96, 0.02);
   const safetyWhite = mat(0xd4d1bc, 0.82, 0.05);
   const laneRubber = mat(0x171a18, 0.92, 0.03);
+  const rust = mat(0x6e4a2d, 0.7, 0.45);
 
-  // Bay floor
-  const floor = new THREE.Mesh(new THREE.PlaneGeometry(22, 68), asphalt);
+  // Expanded bay: ~36m wide × ~90m deep with a 75m qualification line.
+  const halfW = 17.5;
+  const floorLen = 92;
+  const floorZ = -38;
+  const backZ = -82;
+
+  const floor = new THREE.Mesh(new THREE.PlaneGeometry(halfW * 2 + 4, floorLen), asphalt);
   floor.rotation.x = -Math.PI / 2;
-  floor.position.set(0, 0.02, -26);
+  floor.position.set(0, 0.02, floorZ);
   floor.receiveShadow = true;
   root.add(floor);
 
-  // Layered side berms with concrete toes make the bay feel contained without
-  // relying on a single featureless wall.
+  // Terraced side berms — double thickness reads as a real containment wall.
   for (const side of [-1, 1]) {
-    const wall = new THREE.Mesh(new THREE.BoxGeometry(1.4, 4.2, 62), berm);
-    wall.position.set(side * 10.2, 2.1, -26);
-    wall.castShadow = true;
-    wall.receiveShadow = true;
-    root.add(wall);
-    addCollider(colliders, wall);
+    const outer = new THREE.Mesh(new THREE.BoxGeometry(2.4, 5.4, floorLen - 4), berm);
+    outer.position.set(side * (halfW + 0.6), 2.6, floorZ);
+    outer.castShadow = true;
+    outer.receiveShadow = true;
+    root.add(outer);
+    addCollider(colliders, outer);
 
-    const toe = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.48, 61), concrete);
-    toe.position.set(side * 9.18, 0.24, -26);
+    const mid = new THREE.Mesh(new THREE.BoxGeometry(1.1, 3.4, floorLen - 8), bermDark);
+    mid.position.set(side * (halfW - 0.85), 1.65, floorZ + 1);
+    mid.receiveShadow = true;
+    root.add(mid);
+
+    const toe = new THREE.Mesh(new THREE.BoxGeometry(0.72, 0.52, floorLen - 10), concrete);
+    toe.position.set(side * (halfW - 1.55), 0.26, floorZ + 1);
     toe.receiveShadow = true;
     root.add(toe);
-    for (let z = 2; z >= -53; z -= 5) {
-      const fencePost = new THREE.Mesh(new THREE.BoxGeometry(0.09, 2.2, 0.09), metal);
-      fencePost.position.set(side * 9.3, 1.58, z);
+
+    for (let z = 4; z >= backZ + 4; z -= 6) {
+      const fencePost = new THREE.Mesh(new THREE.BoxGeometry(0.1, 2.6, 0.1), metal);
+      fencePost.position.set(side * (halfW - 1.35), 1.85, z);
       root.add(fencePost);
-      const bermBand = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.12, 4.85), dark);
-      bermBand.position.set(side * 9.22, 1.25, z - 2.4);
-      root.add(bermBand);
+      if (z < 0) {
+        const rail = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.1, 5.6), dark);
+        rail.position.set(side * (halfW - 1.4), 1.45, z - 2.8);
+        root.add(rail);
+      }
     }
   }
 
-  // Deep earthen backstop, dark sacrificial face, and overhead ricochet baffles.
-  const backstop = new THREE.Mesh(new THREE.BoxGeometry(22, 6.5, 2.8), berm);
-  backstop.position.set(0, 3.2, -56);
+  // Deep earthen backstop + sacrificial face + overhead baffles.
+  const backstop = new THREE.Mesh(new THREE.BoxGeometry(halfW * 2 + 6, 8.2, 4.2), berm);
+  backstop.position.set(0, 3.9, backZ);
   backstop.castShadow = true;
   root.add(backstop);
   addCollider(colliders, backstop);
 
-  const backFace = new THREE.Mesh(new THREE.BoxGeometry(20, 5.2, 0.35), dark);
-  backFace.position.set(0, 2.8, -54.4);
+  const backFace = new THREE.Mesh(new THREE.BoxGeometry(halfW * 2 + 2, 6.4, 0.4), dark);
+  backFace.position.set(0, 3.2, backZ + 1.85);
   backFace.receiveShadow = true;
   root.add(backFace);
-  const backstopCap = new THREE.Mesh(new THREE.BoxGeometry(20.8, 0.45, 4.8), berm);
-  backstopCap.position.set(0, 6.08, -56.2);
-  backstopCap.rotation.x = -0.08;
+  const backstopCap = new THREE.Mesh(new THREE.BoxGeometry(halfW * 2 + 4, 0.55, 6.2), berm);
+  backstopCap.position.set(0, 7.5, backZ - 0.4);
+  backstopCap.rotation.x = -0.1;
   root.add(backstopCap);
-  for (const x of [-7.5, -2.5, 2.5, 7.5]) {
-    const absorber = new THREE.Mesh(new THREE.BoxGeometry(4.65, 0.22, 1.1), metal);
-    absorber.position.set(x, 4.9, -53.65);
-    absorber.rotation.x = -0.42;
+  for (let i = -3; i <= 3; i += 1) {
+    const absorber = new THREE.Mesh(new THREE.BoxGeometry(4.8, 0.24, 1.25), metal);
+    absorber.position.set(i * 5.1, 5.8, backZ + 2.35);
+    absorber.rotation.x = -0.45;
     root.add(absorber);
   }
 
-  // Overhead baffle / sun shade over firing line
-  const baffle = new THREE.Mesh(new THREE.BoxGeometry(18, 0.25, 6), metal);
-  baffle.position.set(0, 3.6, 2);
-  baffle.castShadow = true;
-  root.add(baffle);
-  const baffleLiner = new THREE.Mesh(new THREE.BoxGeometry(17.6, 0.08, 5.6), laneRubber);
-  baffleLiner.position.set(0, 3.43, 2);
-  root.add(baffleLiner);
-
-  for (const x of [-8, -2.5, 2.5, 8]) {
-    const post = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.14, 3.6, 8), metal);
-    post.position.set(x, 1.8, 2);
+  // Dual overhead shade / ricochet baffles over the firing line.
+  for (const [z, w] of [
+    [2.2, 32],
+    [-2.5, 28],
+  ] as const) {
+    const baffle = new THREE.Mesh(new THREE.BoxGeometry(w, 0.28, 5.2), metal);
+    baffle.position.set(0, 3.85, z);
+    baffle.castShadow = true;
+    root.add(baffle);
+    const liner = new THREE.Mesh(new THREE.BoxGeometry(w - 0.5, 0.08, 4.8), laneRubber);
+    liner.position.set(0, 3.66, z);
+    root.add(liner);
+  }
+  for (const x of [-14, -7, 0, 7, 14]) {
+    const post = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.15, 3.9, 8), metal);
+    post.position.set(x, 1.95, 2.2);
     root.add(post);
   }
 
-  // Firing line platform
-  const platform = new THREE.Mesh(new THREE.BoxGeometry(16, 0.18, 4.5), concrete);
-  platform.position.set(0, 0.09, 3.5);
+  // Wide concrete firing deck + ready area.
+  const platform = new THREE.Mesh(new THREE.BoxGeometry(32, 0.2, 7.2), concrete);
+  platform.position.set(0, 0.1, 3.8);
   platform.receiveShadow = true;
   root.add(platform);
+  const readyPad = new THREE.Mesh(new THREE.BoxGeometry(30, 0.12, 3.4), asphalt);
+  readyPad.position.set(0, 0.08, 8.2);
+  readyPad.receiveShadow = true;
+  root.add(readyPad);
 
-  // Four proper firing stalls: rubber benches, side screens, number boards,
-  // and lane centerlines that remain readable all the way to the berm.
-  const laneCenters = [-6, -2, 2, 6];
+  // Six firing stalls with benches, sandbags, and lane paint.
+  const laneCenters = [-12.5, -7.5, -2.5, 2.5, 7.5, 12.5];
   for (let index = 0; index < laneCenters.length; index += 1) {
     const x = laneCenters[index];
-    const bench = new THREE.Mesh(new THREE.BoxGeometry(2.5, 0.78, 0.72), laneRubber);
-    bench.position.set(x, 0.56, 2.05);
+    const bench = new THREE.Mesh(new THREE.BoxGeometry(2.55, 0.78, 0.78), laneRubber);
+    bench.position.set(x, 0.56, 2.15);
     bench.castShadow = true;
     root.add(bench);
-    const benchTop = new THREE.Mesh(new THREE.BoxGeometry(2.7, 0.12, 0.9), metal);
-    benchTop.position.set(x, 1.0, 2.05);
+    const benchTop = new THREE.Mesh(new THREE.BoxGeometry(2.75, 0.12, 0.95), metal);
+    benchTop.position.set(x, 1.0, 2.15);
     root.add(benchTop);
-    const bags = makeSandbagLine(1.9);
-    bags.position.set(x, 0, 0.72);
+    const bags = makeSandbagLine(2.1);
+    bags.position.set(x, 0, 0.78);
     root.add(bags);
 
-    const laneNumber = makeTextSign(`LANE 0${index + 1}`, 1.7, 0.48, "#d0c58f", "#1d211c");
-    laneNumber.position.set(x, 2.95, 4.96);
+    const laneNumber = makeTextSign(`LANE 0${index + 1}`, 1.75, 0.48, "#d0c58f", "#1d211c");
+    laneNumber.position.set(x, 3.05, 5.35);
     root.add(laneNumber);
 
-    for (let z = -1; z >= -51; z -= 2.4) {
-      const dash = new THREE.Mesh(new THREE.BoxGeometry(0.055, 0.025, 1.3), safetyWhite);
+    for (let z = -1; z >= -78; z -= 2.5) {
+      const dash = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.025, 1.35), safetyWhite);
       dash.position.set(x, 0.055, z);
       root.add(dash);
     }
   }
-  for (const x of [-4, 4]) {
-    const divider = new THREE.Mesh(new THREE.BoxGeometry(0.1, 1.62, 3.25), metal);
-    divider.position.set(x, 1.43, 2.35);
+  for (const x of [-10, -5, 0, 5, 10]) {
+    const divider = new THREE.Mesh(new THREE.BoxGeometry(0.1, 1.7, 3.4), metal);
+    divider.position.set(x, 1.48, 2.45);
     root.add(divider);
-    const dividerInset = new THREE.Mesh(new THREE.BoxGeometry(0.12, 1.28, 2.72), laneRubber);
-    dividerInset.position.set(x, 1.43, 2.32);
+    const dividerInset = new THREE.Mesh(new THREE.BoxGeometry(0.12, 1.32, 2.9), laneRubber);
+    dividerInset.position.set(x, 1.48, 2.42);
     root.add(dividerInset);
   }
-  const centerLaneBreak = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.025, 3.25), safetyWhite);
-  centerLaneBreak.position.set(0, 0.205, 2.35);
-  root.add(centerLaneBreak);
 
-  // Double firing line with no-step stencil blocks.
-  const fireLine = new THREE.Mesh(new THREE.BoxGeometry(16, 0.04, 0.22), paint);
-  fireLine.position.set(0, 0.2, 1.15);
+  const fireLine = new THREE.Mesh(new THREE.BoxGeometry(30, 0.04, 0.24), paint);
+  fireLine.position.set(0, 0.22, 1.2);
   root.add(fireLine);
-  const readyLine = new THREE.Mesh(new THREE.BoxGeometry(16, 0.035, 0.1), safetyWhite);
-  readyLine.position.set(0, 0.195, 4.85);
+  const readyLine = new THREE.Mesh(new THREE.BoxGeometry(30, 0.035, 0.1), safetyWhite);
+  readyLine.position.set(0, 0.2, 5.35);
   root.add(readyLine);
   for (const x of laneCenters) {
-    const toeMark = new THREE.Mesh(new THREE.BoxGeometry(2.45, 0.045, 0.55), paint);
-    toeMark.position.set(x, 0.205, 1.52);
+    const toeMark = new THREE.Mesh(new THREE.BoxGeometry(2.5, 0.045, 0.55), paint);
+    toeMark.position.set(x, 0.22, 1.58);
     root.add(toeMark);
   }
 
-  // Distance markers at 10 / 25 / 50
-  for (const dist of [10, 25, 50]) {
+  // Distance markers: 10 / 25 / 50 / 75
+  for (const dist of [10, 25, 50, 75]) {
     for (const side of [-1, 1]) {
       const marker = makeDistanceMarker(dist);
-      marker.position.set(side * 8.6, 0, -dist);
+      marker.position.set(side * (halfW - 2.2), 0, -dist);
       root.add(marker);
-      const distanceSign = makeTextSign(`${dist} M`, 1.05, 0.42, "#d2bd72", "#171a16");
-      distanceSign.position.set(side * 8.52, 1.62, -dist + 0.05);
-      distanceSign.rotation.y = side < 0 ? 0.12 : -0.12;
+      const distanceSign = makeTextSign(`${dist} M`, 1.15, 0.44, "#d2bd72", "#171a16");
+      distanceSign.position.set(side * (halfW - 2.1), 1.68, -dist + 0.05);
+      distanceSign.rotation.y = side < 0 ? 0.14 : -0.14;
       root.add(distanceSign);
     }
-    const stripe = new THREE.Mesh(new THREE.BoxGeometry(18, 0.03, 0.12), paint);
+    const stripe = new THREE.Mesh(new THREE.BoxGeometry(halfW * 2 - 2, 0.03, 0.14), paint);
     stripe.position.set(0, 0.04, -dist);
     root.add(stripe);
+    // Mid-lane yard boards for long-distance readability
+    if (dist >= 50) {
+      const board = makeTextSign(`${dist}M LINE`, 2.4, 0.5, "#2b332c", "#d8cf9a");
+      board.position.set(0, 2.15, -dist + 0.4);
+      root.add(board);
+    }
   }
 
-  // Control booth
-  const booth = new THREE.Mesh(new THREE.BoxGeometry(3.2, 2.6, 2.8), concrete);
-  booth.position.set(-7.5, 1.3, 6.5);
+  // Range control booth (larger) + ammo shed
+  const booth = new THREE.Mesh(new THREE.BoxGeometry(4.2, 2.9, 3.4), concrete);
+  booth.position.set(-13.5, 1.45, 8.4);
   booth.castShadow = true;
   root.add(booth);
   addCollider(colliders, booth);
-  const boothRoof = new THREE.Mesh(new THREE.BoxGeometry(3.6, 0.15, 3.2), metal);
-  boothRoof.position.set(-7.5, 2.7, 6.5);
+  const boothRoof = new THREE.Mesh(new THREE.BoxGeometry(4.7, 0.18, 3.9), metal);
+  boothRoof.position.set(-13.5, 3.0, 8.4);
   root.add(boothRoof);
   const window = new THREE.Mesh(
-    new THREE.BoxGeometry(1.4, 0.9, 0.08),
+    new THREE.BoxGeometry(1.8, 1.05, 0.08),
     new THREE.MeshStandardMaterial({
       color: 0xb8d8c8,
       emissive: 0x3a6a58,
-      emissiveIntensity: 0.18,
+      emissiveIntensity: 0.2,
       roughness: 0.3,
       metalness: 0.08,
     })
   );
-  window.position.set(-7.5, 1.55, 5.05);
+  window.position.set(-13.5, 1.7, 6.65);
   root.add(window);
-  const boothSign = makeTextSign("RANGE CONTROL", 2.45, 0.55, "#2b332c", "#d8cf9a");
-  boothSign.position.set(-7.5, 2.25, 5.04);
+  const boothSign = makeTextSign("RANGE CONTROL", 3.1, 0.58, "#2b332c", "#d8cf9a");
+  boothSign.position.set(-13.5, 2.55, 6.64);
   root.add(boothSign);
 
-  // Ammo refill crate (interact / proximity)
+  // Observation / scoring desk opposite the booth
+  const desk = new THREE.Mesh(new THREE.BoxGeometry(3.6, 1.05, 1.4), concrete);
+  desk.position.set(13.2, 0.55, 7.8);
+  desk.castShadow = true;
+  root.add(desk);
+  addCollider(colliders, desk);
+  const deskSign = makeTextSign("SCORING", 2.2, 0.45, "#d0c58f", "#1d211c");
+  deskSign.position.set(13.2, 1.55, 7.05);
+  root.add(deskSign);
+
+  // Ammo refill crate
   const crate = new THREE.Group();
   crate.name = "RangeRefill";
-  const crateBody = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.75, 0.8), mat(0x8a6a38, 0.88, 0.05));
-  crateBody.position.y = 0.38;
+  const crateBody = new THREE.Mesh(new THREE.BoxGeometry(1.35, 0.82, 0.9), mat(0x8a6a38, 0.88, 0.05));
+  crateBody.position.y = 0.42;
   crateBody.castShadow = true;
   crate.add(crateBody);
-  const band = new THREE.Mesh(new THREE.BoxGeometry(1.24, 0.08, 0.84), metal);
-  band.position.y = 0.38;
+  const band = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.09, 0.94), metal);
+  band.position.y = 0.42;
   crate.add(band);
-  const stencil = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.22, 0.04), paint);
-  stencil.position.set(0, 0.5, 0.42);
+  const stencil = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.24, 0.04), paint);
+  stencil.position.set(0, 0.55, 0.48);
   crate.add(stencil);
-  const glow = new THREE.PointLight(0xc9a227, 0.8, 5, 2);
-  glow.position.set(0, 1.1, 0);
+  const glow = new THREE.PointLight(0xc9a227, 0.95, 6, 2);
+  glow.position.set(0, 1.2, 0);
   crate.add(glow);
-  crate.position.set(5.5, 0, 5.2);
+  crate.position.set(5.8, 0, 6.4);
   crate.userData.refill = true;
   root.add(crate);
   addCollider(colliders, crate);
 
-  // Flood lights: visible fixtures on every pole, with only three real lights
-  // to keep mobile draw and lighting cost bounded.
+  // Steel plate rack dressing near 25m (non-hittable props)
+  for (const x of [-14, 14]) {
+    const rack = new THREE.Mesh(new THREE.BoxGeometry(0.2, 2.4, 3.2), rust);
+    rack.position.set(x, 1.2, -24);
+    root.add(rack);
+    for (let i = 0; i < 3; i += 1) {
+      const plate = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.28, 0.06, 16), rust);
+      plate.rotation.x = Math.PI / 2;
+      plate.position.set(x + (x < 0 ? 0.35 : -0.35), 0.7 + i * 0.55, -23.2 + i * 0.15);
+      root.add(plate);
+    }
+  }
+
+  // Wind sock poles for long-range atmosphere
+  for (const [wx, wz] of [
+    [-15.5, -40],
+    [15.5, -40],
+    [-15.5, -70],
+    [15.5, -70],
+  ] as const) {
+    const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.08, 4.2, 6), metal);
+    pole.position.set(wx, 2.1, wz);
+    root.add(pole);
+    const sock = new THREE.Mesh(
+      new THREE.ConeGeometry(0.22, 1.1, 6, 1, true),
+      new THREE.MeshStandardMaterial({ color: 0xc9a227, side: THREE.DoubleSide, roughness: 0.85 })
+    );
+    sock.rotation.z = Math.PI / 2;
+    sock.position.set(wx + 0.55, 3.85, wz);
+    root.add(sock);
+  }
+
+  // Flood lights — fixtures on every mast, alternate real SpotLights for cost.
   let lightIndex = 0;
   for (const [lx, lz] of [
-    [-8, 4],
-    [8, 4],
-    [-8, -20],
-    [8, -20],
-    [-8, -45],
-    [8, -45],
+    [-14, 5],
+    [14, 5],
+    [-14, -18],
+    [14, -18],
+    [-14, -42],
+    [14, -42],
+    [-14, -68],
+    [14, -68],
   ] as const) {
-    const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.12, 5.5, 8), metal);
-    pole.position.set(lx, 2.75, lz);
+    const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.13, 6.2, 8), metal);
+    pole.position.set(lx, 3.1, lz);
     root.add(pole);
-    const lamp = new THREE.SpotLight(0xfff0d0, 28, 42, Math.PI / 5, 0.45, 1);
-    lamp.position.set(lx, 5.3, lz);
-    lamp.target.position.set(0, 0, lz - 8);
+    const lamp = new THREE.SpotLight(0xfff0d0, 34, 55, Math.PI / 4.8, 0.45, 1);
+    lamp.position.set(lx, 6.0, lz);
+    lamp.target.position.set(0, 0, lz - 10);
     root.add(lamp);
     root.add(lamp.target);
-    const housing = new THREE.Mesh(new THREE.BoxGeometry(0.45, 0.2, 0.55), metal);
-    housing.position.set(lx, 5.35, lz);
+    const housing = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.22, 0.6), metal);
+    housing.position.set(lx, 6.05, lz);
     root.add(housing);
     if (lightIndex % 2 === 1) {
       root.remove(lamp);
@@ -689,30 +755,31 @@ function buildRangeGeometry(root: THREE.Group, colliders: THREE.Box3[]) {
     lightIndex += 1;
   }
 
-  // Ambient bay fill
-  const fill = new THREE.HemisphereLight(0xd8e0c8, 0x3c3428, 0.55);
-  fill.position.set(0, 6, -15);
+  const fill = new THREE.HemisphereLight(0xd8e0c8, 0x3c3428, 0.62);
+  fill.position.set(0, 8, -30);
   root.add(fill);
 
-  // Readable safety signage and a restrained red live-fire lamp.
-  const sign = makeTextSign("LIVE FIRE RANGE", 3.4, 0.85, "#c7ab45", "#191b17");
-  sign.position.set(0, 2.45, 5.91);
+  const sign = makeTextSign("LIVE FIRE RANGE · 75M", 4.6, 0.95, "#c7ab45", "#191b17");
+  sign.position.set(0, 2.65, 6.55);
   root.add(sign);
-  const clearSign = makeTextSign("EYE + EAR PROTECTION", 3.0, 0.55, "#d7d1b8", "#252923");
-  clearSign.position.set(6.85, 2.45, 5.9);
+  const clearSign = makeTextSign("EYE + EAR PROTECTION REQUIRED", 3.6, 0.55, "#d7d1b8", "#252923");
+  clearSign.position.set(10.5, 2.55, 6.5);
   root.add(clearSign);
   const liveLampMat = new THREE.MeshStandardMaterial({
     color: 0x7a1914,
     emissive: 0x7a1914,
-    emissiveIntensity: 0.28,
+    emissiveIntensity: 0.32,
     roughness: 0.48,
     metalness: 0.15,
   });
-  const liveLamp = new THREE.Mesh(new THREE.SphereGeometry(0.16, 12, 8), liveLampMat);
-  liveLamp.position.set(-2.05, 2.45, 5.88);
+  const liveLamp = new THREE.Mesh(new THREE.SphereGeometry(0.18, 12, 8), liveLampMat);
+  liveLamp.position.set(-2.6, 2.65, 6.48);
   root.add(liveLamp);
+  const hotSign = makeTextSign("HOT RANGE", 1.8, 0.42, "#7a1914", "#f0e6c8");
+  hotSign.position.set(-4.6, 2.65, 6.5);
+  root.add(hotSign);
 
-  return { refillLocal: new THREE.Vector3(5.5, 0, 5.2) };
+  return { refillLocal: new THREE.Vector3(5.8, 0, 6.4), laneCenters };
 }
 
 function createTarget(
@@ -726,7 +793,7 @@ function createTarget(
   const built = makeSilhouettePlate(kind === "moving" ? "silhouette" : kind === "popup" ? "silhouette" : kind, id);
   built.root.position.set(localX, 0, localZ);
   const distanceMeters = Math.round(Math.abs(localZ));
-  const targetScale = distanceMeters >= 50 ? 0.9 : distanceMeters <= 10 ? 1.06 : 1;
+  const targetScale = distanceMeters >= 75 ? 0.82 : distanceMeters >= 50 ? 0.9 : distanceMeters <= 10 ? 1.06 : 1;
   built.root.scale.setScalar(targetScale);
   return {
     id,
@@ -836,18 +903,28 @@ export function createShootingRange(scene: THREE.Scene): ShootingRangeSession {
 
   const targets: InternalTarget[] = [];
 
-  // Static silhouettes at 10 / 25 / 50 across lanes
+  // Static silhouettes / plates across 10 · 25 · 50 · 75m (keep s10 near -2 for QA aim).
   const staticLayout: Array<[string, RangeTargetKind, number, number, number]> = [
-    ["s10a", "silhouette", -6, -10, 10],
-    ["s10b", "silhouette", -2, -10, 10],
-    ["s10c", "silhouette", 2, -10, 10],
-    ["p10", "plate", 6, -10, 15],
-    ["s25a", "silhouette", -6, -25, 25],
-    ["s25b", "silhouette", 0, -25, 25],
-    ["p25", "plate", 6, -25, 35],
-    ["s50a", "silhouette", -4, -50, 50],
-    ["s50b", "silhouette", 4, -50, 50],
-    ["p50", "plate", 0, -50, 60],
+    ["s10a", "silhouette", -12.5, -10, 10],
+    ["s10b", "silhouette", -7.5, -10, 10],
+    ["s10c", "silhouette", -2, -10, 10],
+    ["s10d", "silhouette", 2.5, -10, 10],
+    ["p10a", "plate", 7.5, -10, 15],
+    ["p10b", "plate", 12.5, -10, 15],
+    ["s25a", "silhouette", -12.5, -25, 25],
+    ["s25b", "silhouette", -7.5, -25, 25],
+    ["s25c", "silhouette", -2, -25, 25],
+    ["p25a", "plate", 2.5, -25, 35],
+    ["p25b", "plate", 7.5, -25, 35],
+    ["s25d", "silhouette", 12.5, -25, 25],
+    ["s50a", "silhouette", -10, -50, 50],
+    ["s50b", "silhouette", -5, -50, 50],
+    ["p50a", "plate", 0, -50, 60],
+    ["s50c", "silhouette", 5, -50, 50],
+    ["p50b", "plate", 10, -50, 60],
+    ["s75a", "silhouette", -7.5, -75, 80],
+    ["p75a", "plate", 0, -75, 95],
+    ["s75b", "silhouette", 7.5, -75, 80],
   ];
   for (const [id, kind, x, z, score] of staticLayout) {
     const t = createTarget(id, kind, x, z, score);
@@ -855,24 +932,23 @@ export function createShootingRange(scene: THREE.Scene): ShootingRangeSession {
     root.add(t.root);
   }
 
-  // Pop-up lane (center-left, mid range)
-  const popupA = createTarget("pop25", "popup", -2, -25, 40, { popupPeriod: 2.8 });
-  const popupB = createTarget("pop50", "popup", 2, -50, 70, { popupPeriod: 3.6 });
-  targets.push(popupA, popupB);
-  root.add(popupA.root, popupB.root);
-  // Start ducked
-  popupA.root.position.y = -1.35;
-  popupA.upright = false;
-  setTargetVisualState(popupA, "inactive");
-  popupB.root.position.y = -1.35;
-  popupB.upright = false;
-  setTargetVisualState(popupB, "inactive");
-
+  // Pop-up pits at mid and long range
+  const popupDefs: Array<[string, number, number, number, number]> = [
+    ["pop25a", -2.5, -25, 45, 2.6],
+    ["pop25b", 2.5, -25, 45, 3.1],
+    ["pop50a", -5, -50, 75, 3.4],
+    ["pop50b", 5, -50, 75, 3.8],
+    ["pop75", 0, -75, 110, 4.2],
+  ];
   const pitMat = mat(0x30342f, 0.7, 0.52);
-  for (const [x, z] of [
-    [-2, -25],
-    [2, -50],
-  ] as const) {
+  for (const [id, x, z, score, period] of popupDefs) {
+    const popup = createTarget(id, "popup", x, z, score, { popupPeriod: period });
+    targets.push(popup);
+    root.add(popup.root);
+    popup.root.position.y = -1.35;
+    popup.upright = false;
+    setTargetVisualState(popup, "inactive");
+
     const pit = new THREE.Mesh(new THREE.BoxGeometry(1.35, 0.3, 0.72), pitMat);
     pit.position.set(x, 0.15, z);
     pit.castShadow = true;
@@ -882,22 +958,25 @@ export function createShootingRange(scene: THREE.Scene): ShootingRangeSession {
     root.add(slot);
   }
 
-  // Moving target lane (right rail at 25m)
-  const mover = createTarget("move25", "moving", 0, -25, 55, {
-    moveMin: -3.5,
-    moveMax: 3.5,
-    moveSpeed: 2.8,
-  });
-  mover.baseLocalX = 0;
-  targets.push(mover);
-  root.add(mover.root);
-  const moverRail = new THREE.Mesh(new THREE.BoxGeometry(8.2, 0.15, 0.24), mat(0x343936, 0.58, 0.6));
-  moverRail.position.set(0, 0.18, -25);
-  root.add(moverRail);
-  for (const x of [-3.8, 3.8]) {
-    const railStop = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.55, 0.42), mat(0x8d7238, 0.68, 0.42));
-    railStop.position.set(x, 0.3, -25);
-    root.add(railStop);
+  // Dual moving rails — mid bay (25m) and long bay (50m)
+  const moverLayouts: Array<[string, number, number, number, number, number, number]> = [
+    ["move25", 0, -25, 55, -6, 6, 3.1],
+    ["move50", 0, -50, 85, -5, 5, 2.4],
+  ];
+  for (const [id, x, z, score, moveMin, moveMax, moveSpeed] of moverLayouts) {
+    const mover = createTarget(id, "moving", x, z, score, { moveMin, moveMax, moveSpeed });
+    mover.baseLocalX = x;
+    targets.push(mover);
+    root.add(mover.root);
+    const span = moveMax - moveMin + 1.2;
+    const moverRail = new THREE.Mesh(new THREE.BoxGeometry(span, 0.15, 0.24), mat(0x343936, 0.58, 0.6));
+    moverRail.position.set((moveMin + moveMax) / 2, 0.18, z);
+    root.add(moverRail);
+    for (const stopX of [moveMin - 0.35, moveMax + 0.35]) {
+      const railStop = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.55, 0.42), mat(0x8d7238, 0.68, 0.42));
+      railStop.position.set(stopX, 0.3, z);
+      root.add(railStop);
+    }
   }
 
   scene.add(root);
@@ -943,7 +1022,8 @@ export function createShootingRange(scene: THREE.Scene): ShootingRangeSession {
     lastHitDistance: 0,
   };
 
-  const spawnLocal = new THREE.Vector3(0, 0, 4.2);
+  // Spawn centered in a firing lane — NOT on a divider post (x=0 / ±5 / ±10).
+  const spawnLocal = new THREE.Vector3(2.5, 0, 4.6);
   const spawnWorld = RANGE_WORLD_ORIGIN.clone().add(spawnLocal);
   const refillWorld = RANGE_WORLD_ORIGIN.clone().add(refillLocal);
 
@@ -1026,7 +1106,7 @@ export function createShootingRange(scene: THREE.Scene): ShootingRangeSession {
     },
     tryHit(origin: THREE.Vector3, dir: THREE.Vector3) {
       raycaster.set(origin, dir.clone().normalize());
-      raycaster.far = 90;
+      raycaster.far = 120;
       const hits = raycaster.intersectObjects(hitables, false);
       if (!hits.length) return null;
 

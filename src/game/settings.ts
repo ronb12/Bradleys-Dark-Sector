@@ -31,6 +31,10 @@ export type GameSettings = {
   keybinds: Record<KeybindAction, string>;
   /** Quest / WebXR comfort */
   snapTurnDegrees: 30 | 45 | 90;
+  /** Right-stick yaw: discrete snaps or continuous smooth turn. */
+  xrTurnMode: "snap" | "smooth";
+  /** Degrees per second at full stick deflection (smooth mode). */
+  xrSmoothTurnSpeed: number;
   xrMoveSpeed: number;
   comfortVignette: boolean;
 };
@@ -49,6 +53,8 @@ export const DEFAULT_SETTINGS: GameSettings = {
   reduceMotion: false,
   invertY: false,
   snapTurnDegrees: 45,
+  xrTurnMode: "snap",
+  xrSmoothTurnSpeed: 110,
   xrMoveSpeed: 5,
   comfortVignette: true,
   keybinds: {
@@ -132,12 +138,15 @@ export function xrGraphicsConfig() {
     shadowMapSize: 512,
     /** Desktop canvas DPR while presenting — keep ≤1 to avoid resize thrash. */
     pixelRatioCap: 1,
-    /** WebXR layer resolution scale (1 = native; lower = more stable FPS). */
-    framebufferScale: 0.7,
-    fogDensity: 0.012,
-    particles: 0.3,
+    /**
+     * WebXR layer resolution scale. 1.0 is sharp but expensive on Quest 3;
+     * 0.85 keeps readability while recovering headroom for AI + particles.
+     */
+    framebufferScale: 0.85,
+    fogDensity: 0.014,
+    particles: 0.22,
     volumetricFog: false,
-    maxPointLights: 4,
+    maxPointLights: 3,
     enableShadows: false,
   };
 }
