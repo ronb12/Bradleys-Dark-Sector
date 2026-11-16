@@ -27,8 +27,22 @@ try {
   check('Desktop FPS menu available',shell);
   await page.getByRole('button', {name:/deploy\s*[—-]/i}).click({timeout:25000});
   await page.waitForTimeout(1300);
-  const game = await page.evaluate(() => ({ canvas:document.querySelectorAll('canvas').length, started:Boolean(window.__darkSector?.player), enemyCount:window.__darkSector?.enemies?.length ?? -1 }));
+  const game = await page.evaluate(() => {
+    const enemies = window.__darkSector?.enemies ?? [];
+    const original = enemies.filter(e => e.userData?.darkSectorOriginal === true && e.userData?.modelType === 'original-soldier');
+    const armed = original.filter(e => e.getObjectByName('EnemyWeaponVisual')?.userData?.darkSectorOriginal === true);
+    const animated = original.filter(e => e.userData?.limbs?.head && e.userData?.limbs?.lLeg && e.userData?.limbs?.rArm);
+    return {
+      canvas:document.querySelectorAll('canvas').length,
+      started:Boolean(window.__darkSector?.player),enemyCount:enemies.length,
+      originalCount:original.length,originalWeaponCount:armed.length,
+      animatedCount:animated.length,classes:[...new Set(original.map(e=>e.userData.soldierClass))]
+    };
+  });
   check('Desktop FPS game launches',game.canvas>0 && game.started,game);
+  check('All combat enemies use original Dark Sector designs',game.enemyCount>0&&game.originalCount===game.enemyCount,game);
+  check('All original enemies have articulated animation joints',game.enemyCount>0&&game.animatedCount===game.enemyCount,game.animatedCount);
+  check('All original enemies equip original weapons',game.enemyCount>0&&game.originalWeaponCount===game.enemyCount,game.originalWeaponCount);
   await page.keyboard.down('w'); await page.waitForTimeout(350); await page.keyboard.up('w');
   await page.keyboard.press(' ');
   await page.keyboard.press('r');

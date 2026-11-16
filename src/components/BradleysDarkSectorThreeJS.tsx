@@ -5,6 +5,7 @@ import { clone as cloneSkeleton } from "three/addons/utils/SkeletonUtils.js";
 import type { GLTF } from "three/addons/loaders/GLTFLoader.js";
 import { createOriginalWeaponView, triggerOriginalWeaponFlash, tickOriginalWeaponFlash } from "../game/darkSectorWeapons";
 import { addOriginalFobProps } from "../game/darkSectorEnvironment";
+import { createDarkSectorSoldier, type SoldierClass } from "../game/darkSectorSoldiers";
 import { PvpClient } from "../multiplayer/PvpClient";
 import { DEFAULT_PVP_ROOM } from "../multiplayer/protocol";
 import {
@@ -463,7 +464,7 @@ const SOLDIER_MODEL_URL = "/models/quaternius-swat.glb";
 const WORKER_MODEL_URL = "/models/quaternius-worker.glb";
 const PUNK_MODEL_URL = "/models/quaternius-punk.glb";
 /** Scout always wears this silhouette; Rifleman rolls it at spawn for squad variety. */
-const PUNK_RIFLEMAN_CHANCE = 0.35;
+
 
 /**
  * Mixamo/vanguard GLB visual forward is opposite Three.js Object3D.lookAt (+Z).
@@ -976,39 +977,10 @@ export default function BradleysDarkSectorThreeJS() {
     });
   }
 
-  function groundAlignSoldier(enemy: THREE.Group) {
-    enemy.updateMatrixWorld(true);
-    const box = new THREE.Box3().setFromObject(enemy);
-    if (!Number.isFinite(box.min.y)) {
-      enemy.userData.groundOffset = 0;
-      return;
-    }
-    const offset = -box.min.y;
-    enemy.userData.groundOffset = offset;
-    enemy.position.y = offset;
-    enemy.userData.baseY = offset;
-  }
-
-  /**
-   * Scout always wears the Worker silhouette (fast/lightly-equipped militia
-   * read); Rifleman — the most common type — rolls the Punk silhouette some
-   * of the time so squads aren't a uniform reskinned clone army. Heavy/
-   * Sniper/Commander stay on the SWAT template as the disciplined regulars.
-   * All three share one rig/animation set, so this is a pure mesh swap.
-   */
-  function pickEnemyModelTemplate(state: GameState, type: EnemyType): THREE.Group | null {
-    if (type.name === "Scout" && state.enemyTemplateWorker) return state.enemyTemplateWorker;
-    if (type.name === "Rifleman" && state.enemyTemplatePunk && Math.random() < PUNK_RIFLEMAN_CHANCE) {
-      return state.enemyTemplatePunk;
-    }
-    return state.enemyTemplate;
-  }
-
   function cloneEnemyFromTemplate(state: GameState, type: EnemyType) {
-    const template = pickEnemyModelTemplate(state, type);
-    const enemy = template
-      ? (cloneSkeleton(template) as THREE.Group)
-      : makeRealisticProceduralSoldier(type.name, type.color, true);
+    // Original Dark Sector combat silhouettes. Friendly/PVP rigs retain their
+    // imported animations; hostile AI uses our independently authored soldiers.
+    const enemy = createDarkSectorSoldier(type.name as SoldierClass, Math.floor(Math.random() * 1000), isTouchDevice());
 
     enemy.name = type.name;
     enemy.userData = {
@@ -1027,7 +999,7 @@ export default function BradleysDarkSectorThreeJS() {
       alive: true,
       cooldown: 0.8 + Math.random() * 1.8,
       flank: Math.random() < 0.5 ? -1 : 1,
-      modelType: template ? (state.fbxModeLoaded ? "fbx-mixamo" : "mixamo-glb") : "procedural3d",
+      modelType: "original-soldier",
       walkTime: Math.random() * 10,
       baseY: 0,
       groundOffset: 0,
@@ -1048,14 +1020,9 @@ export default function BradleysDarkSectorThreeJS() {
 
     enemy.traverse((child) => {
       if (child instanceof THREE.Mesh) {
-        // SkeletonUtils shares materials between clones. Give each enemy its
-        // own material so hit flashes do not light up the entire squad.
-        if (Array.isArray(child.material)) {
-          child.material = child.material.map((material) => material.clone());
-        } else {
-          child.material = child.material.clone();
-        }
-        // Enemy shadow casters are expensive at squad scale — rely on environment shadows only.
+        // The original geometry has immutable shared buffers; individual
+        // materials are isolated once in enhanceEnemyCombatReadability below.
+        // Avoid the legacy double-clone allocation on every enemy spawn.
         child.castShadow = false;
         child.receiveShadow = false;
       }
@@ -1067,14 +1034,9 @@ export default function BradleysDarkSectorThreeJS() {
     // materials cannot reintroduce emissive accents.
     enhanceEnemyCombatReadability(enemy, type);
 
-    if (template) {
-      enemy.scale.setScalar(state.fbxModeLoaded ? 0.012 : GLB_SOLDIER_SCALE);
-      playAnimation(state, enemy, ["idle_gun_pointing", "idle_gun", "idle"]);
-      groundAlignSoldier(enemy);
-    } else {
-      enemy.scale.setScalar(1.48);
-      enemy.userData.groundOffset = 0;
-    }
+    // Preserve original model's realistic world proportions and procedural
+    // limb animation contract; no Quaternius/Mixamo rig on combat hostiles.
+    enemy.userData.groundOffset = 0;
 
     // Difficulty scaling
     const diff = DIFFICULTY[state.difficulty] || DIFFICULTY.operator;
@@ -2350,10 +2312,6 @@ export default function BradleysDarkSectorThreeJS() {
 
   function spawnEnemy(state: GameState, forcedType?: EnemyType) {
     if (state.enemies.length >= MAX_ALIVE_ENEMIES()) return;
-    if (!state.enemyTemplate) {
-      setHud((prev) => ({ ...prev, modelMode: "Using built-in soldiers — FBX files not found in /public/models" }));
-    }
-
     const type = forcedType ?? ENEMY_TYPES[Math.floor(Math.random() * ENEMY_TYPES.length)];
     const enemy = cloneEnemyFromTemplate(state, type);
 
@@ -4658,13 +4616,7 @@ export default function BradleysDarkSectorThreeJS() {
       rangeBestScore: rangeStats?.bestChallengeScore ?? loadBestChallengeScore(),
       rangeHighestBadge: rangeStats?.highestBadge ?? loadHighestBadge(),
       rangeUnlockedBadges: rangeStats?.unlockedBadges ?? loadUnlockedBadges(),
-      modelMode: state.fbxModeLoaded
-        ? `FBX soldier + ${Object.keys(state.fbxClips).length} animations`
-        : state.enemyModelLoaded
-          ? state.enemyAnimations.length
-            ? `Detailed soldier (${state.enemyAnimations.length} animations)`
-            : "Detailed soldier loaded"
-          : "procedural 3D fallback",
+      modelMode: "Original Dark Sector enemies · 5 tactical classes",
     };
 
     hudTimerRef.current += dt;
@@ -4688,7 +4640,10 @@ export default function BradleysDarkSectorThreeJS() {
     console.assert(Boolean(testSoldier.userData.limbs?.head), "Procedural soldier should track head animation data.");
     console.assert(Boolean(testSoldier.userData.limbs?.rifle), "Procedural soldier should track rifle animation data.");
     console.assert(testSoldier.userData.alive === true, "Procedural test soldier factory should still work only as an internal fallback test, not as visible gameplay characters.");
-    console.assert(SOLDIER_MODEL_URL.endsWith(".glb"), "Primary soldier model should be a web-ready GLB.");
+    const originalSoldier = createDarkSectorSoldier("Heavy", 2);
+    console.assert(originalSoldier.userData.darkSectorOriginal === true, "Combat enemies must use original Dark Sector designs.");
+    console.assert(originalSoldier.userData.limbs?.lLeg, "Original enemies must support leg animation.");
+    console.assert(originalSoldier.scale.x < 1, "Original enemies should retain their realistic body scale.");
     console.assert(createOriginalWeaponView("m4").userData.darkSectorOriginal === true, "Dark Sector original carbine should be available.");
     console.assert(createOriginalWeaponView("pistol").userData.darkSectorOriginal === true, "Dark Sector original sidearm should be available.");
     console.assert(WEAPONS.m4.automatic && !WEAPONS.pistol.automatic, "M4 should be automatic and pistol semi-automatic.");

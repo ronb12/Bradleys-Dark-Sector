@@ -94,6 +94,60 @@ function makeSupplyCache(){
   return g;
 }
 
+/**
+ * Reusable field illumination props. The head units are emissive mesh fixtures,
+ * not expensive point lights: mobile and Quest get the same silhouette.
+ */
+function makeSecurityFloodlight(mobile: boolean) {
+  const root = new THREE.Group();
+  root.name = "DarkSector/TacticalFloodlight";
+  root.userData.darkSectorOriginal = true;
+  panel(root, [0.88, 0.14, 0.85], [0, 0.07, 0], armor);
+  const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.082, 4.25, 8), steel);
+  mast.position.y = 2.22;
+  root.add(mast);
+  panel(root, [1.55, 0.11, 0.13], [0, 4.29, 0], steel);
+  const lamps = mobile ? [-0.45, 0.45] : [-0.55, 0, 0.55];
+  for (const x of lamps) {
+    panel(root, [0.42, 0.34, 0.14], [x, 4.23, -0.18], armor);
+    panel(root, [0.34, 0.26, 0.025], [x, 4.24, -0.272], light);
+  }
+  // Cable conduit, power trunk, and the manual pivot lock.
+  panel(root, [0.10, 1.22, 0.12], [0.12, 0.81, 0.03], rubber);
+  panel(root, [0.32, 0.27, 0.24], [0.14, 1.26, 0.03], paint);
+  return root;
+}
+
+function makeSecurityCheckpointSign() {
+  const root = new THREE.Group();
+  root.name = "DarkSector/SecurityGateSign";
+  root.userData.darkSectorOriginal = true;
+  for (const x of [-1.65, 1.65]) {
+    panel(root, [0.15, 3.1, 0.19], [x, 1.55, 0], steel);
+    panel(root, [0.42, 0.18, 0.42], [x, 0.1, 0], armor);
+  }
+  panel(root, [3.36, 1.15, 0.12], [0, 2.31, 0], armor);
+  panel(root, [3.20, 1.01, 0.03], [0, 2.31, -0.083], paint);
+  const canvas = document.createElement("canvas");
+  canvas.width = 640; canvas.height = 240;
+  const ctx = canvas.getContext("2d")!;
+  ctx.fillStyle = "#19282f"; ctx.fillRect(0, 0, 640, 240);
+  ctx.strokeStyle = "#bb9b57"; ctx.lineWidth = 12; ctx.strokeRect(6, 6, 628, 228);
+  ctx.font = "bold 45px sans-serif"; ctx.fillStyle = "#c9e8e7";
+  ctx.textAlign = "center"; ctx.fillText("DARK SECTOR", 320, 91);
+  ctx.font = "bold 29px monospace"; ctx.fillStyle = "#e1b765";
+  ctx.fillText("SECURITY CHECKPOINT", 320, 148);
+  ctx.font = "20px monospace"; ctx.fillStyle = "#a5bfbe";
+  ctx.fillText("AO-17  |  RESTRICTED ACCESS", 320, 194);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const screen = new THREE.Mesh(new THREE.PlaneGeometry(3.03, 0.95),
+    new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide }));
+  screen.position.set(0, 2.31, -0.108);
+  root.add(screen);
+  return root;
+}
+
 export function addOriginalFobProps(parent:THREE.Object3D,colliders:THREE.Box3[],mobile:boolean) {
   const stations:[string,number,number,number][]=[
     ["OUTPOST ALPHA",-14,4,0],
@@ -113,4 +167,21 @@ export function addOriginalFobProps(parent:THREE.Object3D,colliders:THREE.Box3[]
     parent.add(cache);
     colliders.push(new THREE.Box3().setFromObject(cache));
   }
+
+  // Clear road centerline and walking routes; these modules are visual-only.
+  // The positions stay outside the immediate spawn and checkpoint approach.
+  const lightPositions: Array<[number, number, number]> = [
+    [-34, -8, 0.35], [34, -8, -0.35],
+    [-28, 28, 0.65], [28, 28, -0.65],
+  ];
+  for (const [x, z, angle] of mobile ? lightPositions.slice(0, 2) : lightPositions) {
+    const fixture = makeSecurityFloodlight(mobile);
+    fixture.position.set(x, 0, z);
+    fixture.rotation.y = angle;
+    parent.add(fixture);
+  }
+  const sign = makeSecurityCheckpointSign();
+  sign.position.set(0, 0, -42);
+  sign.rotation.y = Math.PI;
+  parent.add(sign);
 }

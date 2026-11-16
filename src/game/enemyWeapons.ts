@@ -3,6 +3,7 @@
 import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import type { GLTF } from "three/addons/loaders/GLTFLoader.js";
+import { createOriginalEnemyWeapon } from "./darkSectorEnemyWeapons";
 
 const AK_URL = "/models/weapons/quaternius-ak47.glb";
 const PISTOL_URL = "/models/pistol.glb";
@@ -362,7 +363,11 @@ export function attachEnemyWeapon(soldier: THREE.Group, kind: EnemyWeaponKind = 
     kit.name = "EnemyWeaponKit";
 
     let weaponVisual: THREE.Object3D;
-    if (kind === "pistol") {
+    // The hostile soldier family equips original matching weapons. Imported
+    // models remain an untouched fallback for allied and PVP rigged avatars.
+    if (soldier.userData.modelType === "original-soldier") {
+      weaponVisual = createOriginalEnemyWeapon(kind);
+    } else if (kind === "pistol") {
       weaponVisual = pistolTemplate ? pistolTemplate.clone(true) : makeProceduralPistol();
     } else {
       weaponVisual = akTemplate ? akTemplate.clone(true) : makeProceduralAk();
