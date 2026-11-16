@@ -2604,13 +2604,42 @@ export default function BradleysDarkSectorThreeJS() {
   }
 
   function pulseEnemyMuzzleFlash(enemy: THREE.Group) {
-    enemy.userData.muzzleFlashUntil = performance.now() + 90;
-    // Mesh/sprite flash only — per-enemy PointLights were flooding the light budget.
+    enemy.userData.muzzleFlashUntil = performance.now() + 80;
+    // Construct on first use, after enemy uniform shading has been applied.
+    // The FX is attached to the animated barrel, never a stationary world point.
+    const muzzle = enemy.userData.muzzleObject as THREE.Object3D | undefined;
+    if (!muzzle) return;
+    let flash = muzzle.getObjectByName("DS Enemy Muzzle Flash");
+    if (!flash) {
+      flash = new THREE.Group();
+      flash.name = "DS Enemy Muzzle Flash";
+      const flame = new THREE.Mesh(
+        new THREE.ConeGeometry(0.09, 0.3, 5),
+        new THREE.MeshBasicMaterial({
+          color: 0xffdf8c, transparent: true, opacity: 0.9,
+          depthWrite: false, toneMapped: false, side: THREE.DoubleSide,
+        }),
+      );
+      flame.rotation.x = -Math.PI / 2;
+      flame.position.z = -0.14;
+      flash.add(flame);
+      const glow = new THREE.Mesh(
+        new THREE.SphereGeometry(0.065, 7, 5),
+        new THREE.MeshBasicMaterial({
+          color: 0xff983e, transparent: true, opacity: 0.7,
+          depthWrite: false, toneMapped: false,
+        }),
+      );
+      flash.add(glow);
+      muzzle.add(flash);
+    }
+    flash.visible = true;
   }
 
   function updateEnemyMuzzleFlash(enemy: THREE.Group) {
-    // Kept for call-site compatibility; light-based muzzle FX removed for FPS.
-    void enemy;
+    const muzzle = enemy.userData.muzzleObject as THREE.Object3D | undefined;
+    const flash = muzzle?.getObjectByName("DS Enemy Muzzle Flash");
+    if (flash) flash.visible = performance.now() < (enemy.userData.muzzleFlashUntil || 0);
   }
 
   function requestAimLock(element: HTMLCanvasElement) {
@@ -2938,10 +2967,13 @@ export default function BradleysDarkSectorThreeJS() {
     const standRLegX = walkOpp * (plantMoving ? 0.82 : 0.04);
     const standLLegZ = Math.cos(t) * (plantMoving ? 0.08 : 0.01);
     const standRLegZ = -Math.cos(t) * (plantMoving ? 0.08 : 0.01);
-    const standLArmX = walkOpp * (plantMoving ? 0.45 : 0.035) - 0.14;
-    const standRArmX = walk * (plantMoving ? 0.38 : 0.035) - 0.12;
-    const standLArmZ = -0.25 + Math.cos(t) * (plantMoving ? 0.08 : 0.02);
-    const standRArmZ = 0.25 - Math.cos(t) * (plantMoving ? 0.06 : 0.02);
+    // Original soldiers keep elbows up and hands forward to support their
+    // animated rifles. Legacy procedural characters retain their old gait.
+    const aimingRifle = group.userData.modelType === "original-soldier";
+    const standLArmX = walkOpp * (plantMoving ? 0.19 : 0.025) + (aimingRifle ? 0.88 : -0.14);
+    const standRArmX = walk * (plantMoving ? 0.17 : 0.025) + (aimingRifle ? 0.72 : -0.12);
+    const standLArmZ = (aimingRifle ? 0.38 : -0.25) + Math.cos(t) * (plantMoving ? 0.06 : 0.018);
+    const standRArmZ = (aimingRifle ? -0.36 : 0.25) - Math.cos(t) * (plantMoving ? 0.05 : 0.018);
     const standTorsoY = 1.55 + bob;
     const standHipsY = 0.95 + bob * 0.75;
     const standTorsoX = plantMoving ? -0.12 : Math.sin(t * 0.5) * 0.015;

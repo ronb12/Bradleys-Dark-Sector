@@ -63,6 +63,30 @@ try {
   test("Enemy squads change position during live combat",moved.progressed,moved);
   test("Enemy muzzle positions remain finite",moved.muzzleFinite,moved.muzzleFinite);
   test("Original soldier leg animations update",moved.animationState,moved.animationState);
+  const mounts=await page.evaluate(()=>{
+    const alive=window.__darkSector.enemies.filter(e=>e.userData.alive);
+    return {
+      total:alive.length,
+      animated:alive.filter(e=>
+        e.userData.weaponAttachmentMode==="animated-rifle-joint" &&
+        e.getObjectByName("EnemyWeaponKit")?.parent===e.userData.limbs?.rifle &&
+        e.userData.limbs.rifle.visible &&
+        e.userData.muzzleObject?.parent?.name==="EnemyPrimaryWeapon"
+      ).length,
+      raisedArms:alive.filter(e=>e.userData.limbs?.lArm.rotation.x>0.2 &&
+        e.userData.limbs?.rArm.rotation.x>0.2).length,
+      originalSidearms:alive.filter(e=>{
+        const h=e.getObjectByName("EnemySidearm");
+        return !h || h.userData.darkSectorOriginal===true;
+      }).length,
+    };
+  });
+  test("Every enemy rifle follows its animated weapon joint",
+    mounts.total>0 && mounts.animated===mounts.total,mounts);
+  test("Enemy arms support first-person-visible rifle positions",
+    mounts.raisedArms>=Math.floor(mounts.total/2),mounts.raisedArms);
+  test("Holstered enemy sidearms use original assets",
+    mounts.originalSidearms===mounts.total,mounts.originalSidearms);
   const initialAmmo=await page.evaluate(()=>window.__darkSector?.ammo??-1);
   await page.keyboard.press(" ");
   await page.waitForTimeout(150);

@@ -50,3 +50,12 @@ This project includes an original, in-house 3D asset set, distinct from the lega
 ## Verification
 
 Run `npm run build`, then `npm run preview` and `node qa-pwa.mjs`. Test physical input and WebXR in compatible headsets before a full release.
+
+## Phase 5: Animated weapon contact and firing feedback (November 16, 2026)
+
+- Original hostile rifles now mount directly on the animated `WeaponPoseAnchor`, ensuring the muzzle and projectile origin follow the soldier's walking, kneeling, and firing recoil.
+- Original combat characters pose both arms forward and inward to support their first-person-visible weapon silhouettes; legacy rigged avatars retain their existing animations.
+- Enemy muzzle flashes now attach to their weapon muzzle for an 80 ms burst. Emissive-looking mesh/sprite-style FX avoids spawning one light source per enemy.
+- Holstered pistols on original hostile soldiers use the original Kestrel-style sidearm geometry rather than the imported model.
+- Automated regression checks cover 13 combat and 15 PWA scenarios, including original weapon parenting, joint visibility, mobile controls and offline solo play.
+- Physical Quest 3 controller interaction and full multiplayer load testing remain unverified; the added effects are lightweight but their device-specific frame rates still require measurement.

@@ -458,13 +458,25 @@ export function attachEnemyWeapon(soldier: THREE.Group, kind: EnemyWeaponKind = 
       soldier.userData.weaponAttachmentMode = "chest-fallback";
     } else {
       const limbs = soldier.userData.limbs;
-      if (limbs?.rifle) limbs.rifle.visible = false;
-      primary.position.set(0.36, 1.52, -0.47);
-      primary.rotation.set(0, -0.15, 0);
-      kit.add(primary);
-      soldier.add(kit);
+      // The original soldier has an animated WeaponPoseAnchor. Mount the kit
+      // to that joint so recoil, kneeling and movement affect both the gun and
+      // the muzzle tracer origin, rather than leaving the rifle hovering still.
+      if (limbs?.rifle && soldier.userData.modelType === "original-soldier") {
+        limbs.rifle.visible = true;
+        primary.position.set(0, 0, 0);
+        primary.rotation.set(0, -0.15, 0);
+        kit.add(primary);
+        limbs.rifle.add(kit);
+        soldier.userData.weaponAttachmentMode = "animated-rifle-joint";
+      } else {
+        if (limbs?.rifle) limbs.rifle.visible = false;
+        primary.position.set(0.36, 1.52, -0.47);
+        primary.rotation.set(0, -0.15, 0);
+        kit.add(primary);
+        soldier.add(kit);
+        soldier.userData.weaponAttachmentMode = "procedural";
+      }
       soldier.userData.weaponBoneAttached = false;
-      soldier.userData.weaponAttachmentMode = "procedural";
     }
 
     const muzzle = addMuzzleMarker(primary, kind);
@@ -472,7 +484,9 @@ export function attachEnemyWeapon(soldier: THREE.Group, kind: EnemyWeaponKind = 
     void muzzle;
 
     if (kind === "ak47") {
-      const sidearm = pistolTemplate ? pistolTemplate.clone(true) : makeProceduralPistol();
+      const sidearm = soldier.userData.modelType === "original-soldier"
+        ? createOriginalEnemyWeapon("pistol")
+        : pistolTemplate ? pistolTemplate.clone(true) : makeProceduralPistol();
       sidearm.name = "EnemySidearm";
       sidearm.scale.multiplyScalar(0.85);
       const hips = isRigged ? findNamedBone(soldier, "Hips") : null;
