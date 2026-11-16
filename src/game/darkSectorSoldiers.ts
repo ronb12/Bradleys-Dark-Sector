@@ -30,6 +30,66 @@ const SKIN_SHADES = [0xa87b60, 0x865e4a, 0x6c4938, 0xc29a78, 0x94694e];
 // prevents allocating new GPU buffers on every spawn and keeps Quest memory flat.
 const boxGeometryCache = new Map<string, RoundedBoxGeometry>();
 const sphereGeometryCache = new Map<string, THREE.SphereGeometry>();
+const taperedGeometryCache = new Map<string, THREE.CylinderGeometry>();
+const camouflageTextures = new Map<string, THREE.CanvasTexture>();
+
+// A small, deterministic cloth atlas is reused for every soldier of a class.
+// It avoids downloading texture files or generating unique canvases per spawn.
+function camouflage(type: SoldierClass, lowPower: boolean) {
+  const key = type + (lowPower ? "/mobile" : "/desktop");
+  const existing = camouflageTextures.get(key);
+  if (existing) return existing;
+  const size = lowPower ? 64 : 128;
+  const canvas = document.createElement("canvas");
+  canvas.width = canvas.height = size;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+  const seedBase = Object.keys(uniformShades).indexOf(type) + 7;
+  let seed = seedBase * 7919;
+  const rand = () => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed / 4294967296; };
+  ctx.fillStyle = "#d5d8c7";
+  ctx.fillRect(0, 0, size, size);
+  for (let n = 0; n < (lowPower ? 40 : 100); n++) {
+    const x = rand() * size;
+    const y = rand() * size;
+    const w = (3 + rand() * 14) * (size / 128);
+    const h = (2 + rand() * 12) * (size / 128);
+    ctx.fillStyle = ["#9da99c", "#bbc4b4", "#e0dec9", "#87998a", "#b1b29d"][Math.floor(rand() * 5)];
+    ctx.beginPath();
+    ctx.ellipse(x, y, w, h, rand() * Math.PI, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 0.13;
+  ctx.strokeStyle = "#35443c";
+  ctx.lineWidth = 1;
+  for (let i = 0; i < size; i += 5) {
+    ctx.beginPath();
+    ctx.moveTo(i, 0); ctx.lineTo(i + 4, size); ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+  const map = new THREE.CanvasTexture(canvas);
+  map.colorSpace = THREE.SRGBColorSpace;
+  map.wrapS = map.wrapT = THREE.RepeatWrapping;
+  map.repeat.set(1.5, 1.5);
+  map.anisotropy = lowPower ? 1 : 2;
+  camouflageTextures.set(key, map);
+  return map;
+}
+
+function taper(root: THREE.Object3D, name: string, top: number, bottom: number, height: number,
+               pos: [number, number, number], mat: THREE.Material) {
+  const key = [top, bottom, height].join("/");
+  let geo = taperedGeometryCache.get(key);
+  if (!geo) {
+    geo = new THREE.CylinderGeometry(top, bottom, height, 10, 1);
+    taperedGeometryCache.set(key, geo);
+  }
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.name = name;
+  mesh.position.set(...pos);
+  root.add(mesh);
+  return mesh;
+}
 
 function material(color: number, roughness = 0.83, metalness = 0.09): Mat {
   return new THREE.MeshStandardMaterial({ color, roughness, metalness });
@@ -74,24 +134,55 @@ function limb(
   pos: [number, number, number], length: number,
   uniform: Mat, armor: Mat, boots: Mat, isLeg: boolean,
 ) {
+  // Hip/shoulder -> knee/elbow -> shin/forearm articulation. The legacy
+  // animation still rotates the outer pivot; the inner joint adds follow-through.
   const joint = new THREE.Group();
   joint.name = name;
   joint.position.set(...pos);
   root.add(joint);
-  const width = isLeg ? 0.22 : 0.18;
-  box(joint, name + "/Fabric", [width, length, isLeg ? 0.23 : 0.19], [0, 0, 0], uniform, 0.065);
-  box(joint, name + "/KneeElbowArmor", [width + 0.06, isLeg ? 0.28 : 0.19, 0.13],
-    [0, isLeg ? -0.14 : -0.18, -0.13], armor, 0.045);
+  const upper = isLeg ? length * 0.5 : length * 0.645;
+  const lower = new THREE.Group();
+  lower.name = isLeg ? name + "/KneeJoint" : name + "/ElbowJoint";
+  lower.position.set(0, -upper, 0);
+  joint.add(lower);
+  joint.userData.lowerLimb = lower;
+
   if (isLeg) {
-    box(joint, name + "/TacticalBoot", [0.24, 0.17, 0.36],
-      [0, -length * 0.48, -0.065], boots, 0.04);
-    box(joint, name + "/ShinGuard", [0.205, 0.32, 0.1],
-      [0, -0.27, -0.135], armor, 0.025);
+    taper(joint, name + "/ThighCloth", 0.154, 0.118, upper * 0.86,
+      [0, -upper * 0.51, 0], uniform);
+    sphere(joint, name + "/UpperThighContour", 0.135,
+      [0, -0.07, 0], uniform, [1.1, 0.9, 1.04]);
+    sphere(lower, name + "/KneeJointPadding", 0.115, [0, 0, 0], uniform);
+    taper(lower, name + "/CalfCloth", 0.116, 0.078, 0.39,
+      [0, -0.2, 0.01], uniform);
+    box(lower, name + "/FloatingKneePlate", [0.23, 0.24, 0.11],
+      [0, -0.032, -0.113], armor, 0.06);
+    box(lower, name + "/ShinArmor", [0.186, 0.30, 0.075],
+      [0, -0.21, -0.105], armor, 0.04);
+    box(lower, name + "/CombatBoot", [0.216, 0.19, 0.31],
+      [0, -0.43, -0.071], boots, 0.04);
+    box(lower, name + "/BootSole", [0.235, 0.045, 0.34],
+      [0, -0.532, -0.078], armor, 0.016);
+    box(lower, name + "/BootLaces", [0.072, 0.07, 0.014],
+      [0, -0.414, -0.238], armor, 0.007);
+    box(joint, name + "/ThighPocket", [0.09, 0.19, 0.10],
+      [name.startsWith("Left") ? -0.142 : 0.142, -0.18, -0.01], armor, 0.023);
   } else {
-    box(joint, name + "/Glove", [0.20, 0.19, 0.22],
-      [0, -length * 0.43, -0.05], boots, 0.06);
-    box(joint, name + "/ShoulderPad", [0.23, 0.25, 0.25],
-      [0, length * 0.35, 0], armor, 0.07);
+    sphere(joint, name + "/ShoulderShape", 0.155, [0, -0.075, 0],
+      uniform, [1.06, 1.04, 0.97]);
+    taper(joint, name + "/UpperArmCloth", 0.111, 0.087, upper * 0.75,
+      [0, -upper * 0.48, 0], uniform);
+    sphere(lower, name + "/ElbowJointPadding", 0.09, [0, 0, 0], uniform);
+    taper(lower, name + "/ForearmCloth", 0.091, 0.069, 0.31,
+      [0, -0.168, -0.01], uniform);
+    box(lower, name + "/ElbowPad", [0.18, 0.16, 0.09],
+      [0, -0.028, -0.07], armor, 0.035);
+    box(lower, name + "/GloveCuff", [0.16, 0.095, 0.18],
+      [0, -0.316, -0.015], armor, 0.023);
+    sphere(lower, name + "/GlovedHand", 0.105,
+      [0, -0.40, -0.024], boots, [0.91, 0.92, 0.8]);
+    box(joint, name + "/ShoulderBallisticPad", [0.22, 0.25, 0.215],
+      [0, -0.105, -0.005], armor, 0.08);
   }
   return joint;
 }
@@ -101,6 +192,8 @@ export function createDarkSectorSoldier(type: SoldierClass, seed = 0, lowPower =
   const body = new THREE.Group();
   body.name = "DS Enemy / " + type;
   const uniform = material(uniformShades[type]);
+  const clothMap = camouflage(type, lowPower);
+  if (clothMap) { uniform.map = clothMap; uniform.needsUpdate = true; }
   const armor = material(type === "Heavy" ? 0x384045 : 0x262f33, 0.68, 0.24);
   const plates = material(type === "Commander" ? 0x4d4639 : 0x333b3e, 0.63, 0.26);
   const webbing = material(0x252a27, 0.94, 0.03);
@@ -171,6 +264,10 @@ export function createDarkSectorSoldier(type: SoldierClass, seed = 0, lowPower =
     box(torso, "InfantryRucksack", [0.48, 0.60, 0.28], [0, 0, 0.41], webbing, 0.06);
   }
 
+  taper(body, "NeckGaiter", 0.13, 0.153, 0.17, [0, 2.045, 0], uniform);
+  box(torso, "MoralePatch", [0.18, 0.09, 0.018], [-0.19, 0.18, -0.389], fabricAccent, 0.012);
+  box(torso, "PlateCarrierGrabHandle", [0.20, 0.045, 0.09], [0, 0.325, 0.31], webbing, 0.016);
+
   const head = new THREE.Group(); head.position.y = 2.23; head.name = "HeadPivot"; body.add(head);
   sphere(head, "HumanFace", 0.24, [0, -0.035, -0.02], skin, [0.94, 1.12, 0.89]);
   box(head, "LowerFaceCover", [0.31, 0.15, 0.09], [0, -0.138, -0.19], webbing, 0.05);
@@ -188,6 +285,15 @@ export function createDarkSectorSoldier(type: SoldierClass, seed = 0, lowPower =
     box(head, "HelmetSideRail", [0.055, 0.14, 0.30], [side * 0.315, 0.135, 0], plates, 0.022);
     box(head, "HelmetCheekPlate", [0.08, 0.21, 0.18], [side * 0.258, -0.035, -0.045], armor, 0.032);
   }
+  if (!lowPower) {
+    for (const side of [-1, 1]) {
+      box(head, "HelmetCommsEarCup", [0.105, 0.18, 0.175],
+        [side * 0.308, -0.055, 0.024], plates, 0.035);
+    }
+    const commsBoom = box(head, "CommsMicrophoneBoom", [0.19, 0.025, 0.025],
+      [-0.23, -0.185, -0.128], webbing, 0.009);
+    commsBoom.rotation.y = -0.34;
+  }
   if (type === "Commander") {
     box(head, "CommandStripe", [0.28, 0.025, 0.026], [0, 0.337, -0.065], fabricAccent, 0.009);
     box(head, "CommandAntennaBase", [0.08, 0.12, 0.09], [-0.23, 0.238, 0.07], webbing, 0.015);
@@ -197,10 +303,10 @@ export function createDarkSectorSoldier(type: SoldierClass, seed = 0, lowPower =
     box(head, "FullBallisticFaceShield", [0.49, 0.28, 0.08], [0, -0.075, -0.282], glass, 0.04);
   }
 
-  const lArm = limb(body, "LeftArmPivot", [-0.48, 1.52, -0.03], 0.62, uniform, plates, boots, false);
-  const rArm = limb(body, "RightArmPivot", [0.48, 1.52, -0.03], 0.62, uniform, plates, boots, false);
-  const lLeg = limb(body, "LeftLegPivot", [-0.19, 0.55, 0], 0.92, uniform, armor, boots, true);
-  const rLeg = limb(body, "RightLegPivot", [0.19, 0.55, 0], 0.92, uniform, armor, boots, true);
+  const lArm = limb(body, "LeftArmPivot", [-0.48, 1.77, -0.03], 0.62, uniform, plates, boots, false);
+  const rArm = limb(body, "RightArmPivot", [0.48, 1.77, -0.03], 0.62, uniform, plates, boots, false);
+  const lLeg = limb(body, "LeftLegPivot", [-0.19, 1.0, 0], 0.92, uniform, armor, boots, true);
+  const rLeg = limb(body, "RightLegPivot", [0.19, 1.0, 0], 0.92, uniform, armor, boots, true);
 
   // Attachment anchor is hidden when enemyWeapons.ts equips the visible gun.
   const rifle = new THREE.Group();
@@ -212,7 +318,12 @@ export function createDarkSectorSoldier(type: SoldierClass, seed = 0, lowPower =
   body.userData.darkSectorOriginal = true;
   body.userData.soldierClass = type;
   body.userData.soldierVariation = seed % 5;
-  body.userData.limbs = { hips, torso, head, lArm, rArm, lLeg, rLeg, rifle };
+  body.userData.limbs = {
+    hips, torso, head, lArm, rArm, lLeg, rLeg, rifle,
+    lElbow: lArm.userData.lowerLimb, rElbow: rArm.userData.lowerLimb,
+    lKnee: lLeg.userData.lowerLimb, rKnee: rLeg.userData.lowerLimb,
+  };
+  body.userData.soldierRigVersion = 2;
   body.userData.alive = true;
   body.userData.walkTime = (seed % 5) * 1.4;
   body.userData.actionLock = 0;

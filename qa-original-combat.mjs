@@ -39,6 +39,25 @@ try {
   test("Every combat enemy uses an original soldier",start.enemies>0&&start.originals===start.enemies,{enemies:start.enemies,originals:start.originals});
   test("Every original enemy has an original weapon",start.weaponOriginals===start.enemies,start.weaponOriginals);
   test("Every enemy has animated joints",start.limbRigs===start.enemies,start.limbRigs);
+  const modernRigs=await page.evaluate(()=>{
+    const original=window.__darkSector.enemies.filter(e=>e.userData.alive);
+    return original.map(e=>{
+      const limb=e.userData.limbs;
+      const cloth=e.getObjectByName("CombatJacket");
+      return {
+        type:e.userData.soldierClass, version:e.userData.soldierRigVersion,
+        allFour:Boolean(limb?.lElbow&&limb?.rElbow&&limb?.lKnee&&limb?.rKnee),
+        leftBoot:Boolean(e.getObjectByName("LeftLegPivot/CombatBoot")),
+        helmet:Boolean(e.getObjectByName("BallisticHelmetShell")),
+        textured:Boolean(cloth?.material?.map?.isCanvasTexture),
+        face:Boolean(e.getObjectByName("HumanFace")),
+      };
+    });
+  });
+  test("Soldiers have four secondary limb joints and boots",
+    modernRigs.length>0 && modernRigs.every(e=>e.version===2&&e.allFour&&e.leftBoot&&e.helmet&&e.face),modernRigs.slice(0,5));
+  test("Soldier uniforms use original camouflage patterns",
+    modernRigs.length>0 && modernRigs.every(e=>e.textured),modernRigs.filter(e=>!e.textured));
   test("Original checkpoint, equipment and floodlights in scene",
     start.environment.some(n=>n.includes("SecurityGateSign"))&&
     start.environment.some(n=>n.includes("TacticalFloodlight"))&&

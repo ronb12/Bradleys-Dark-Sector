@@ -2986,10 +2986,10 @@ export default function BradleysDarkSectorThreeJS() {
     const kneelRLegX = 1.55;
     const kneelLLegZ = -0.08;
     const kneelRLegZ = 0.12;
-    const kneelLArmX = -0.55;
-    const kneelRArmX = -0.72;
-    const kneelLArmZ = -0.32;
-    const kneelRArmZ = 0.28;
+    const kneelLArmX = aimingRifle ? 0.96 : -0.55;
+    const kneelRArmX = aimingRifle ? 0.86 : -0.72;
+    const kneelLArmZ = aimingRifle ? 0.28 : -0.32;
+    const kneelRArmZ = aimingRifle ? -0.29 : 0.28;
     const kneelTorsoY = 1.12;
     const kneelHipsY = 0.52;
     const kneelTorsoX = 0.06;
@@ -3006,14 +3006,30 @@ export default function BradleysDarkSectorThreeJS() {
     limbs.rArm.rotation.x = THREE.MathUtils.lerp(standRArmX, kneelRArmX, k);
     limbs.lArm.rotation.z = THREE.MathUtils.lerp(standLArmZ, kneelLArmZ, k);
     limbs.rArm.rotation.z = THREE.MathUtils.lerp(standRArmZ, kneelRArmZ, k);
+    // Two-stage lower limbs prevent straight, stiff soldier legs.
+    // The retreating calf folds during the swing phase; kneeling uses a
+    // stronger asymmetric bend so boots and knees have distinct silhouettes.
+    if (aimingRifle && limbs.lKnee && limbs.rKnee) {
+      const leftStep = plantMoving ? Math.max(0, -walk) : 0;
+      const rightStep = plantMoving ? Math.max(0, -walkOpp) : 0;
+      limbs.lKnee.rotation.x = THREE.MathUtils.lerp(-0.08 - leftStep * 0.60, -0.77, k);
+      limbs.rKnee.rotation.x = THREE.MathUtils.lerp(-0.08 - rightStep * 0.60, -1.15, k);
+      limbs.lElbow.rotation.x = THREE.MathUtils.lerp(0.38 + (plantMoving ? walk * 0.07 : 0), 0.44, k) - shootKick * 0.18;
+      limbs.rElbow.rotation.x = THREE.MathUtils.lerp(0.46 + (plantMoving ? walkOpp * 0.05 : 0), 0.56, k) - shootKick * 0.26;
+      group.userData.soldierPose = k > 0.5 ? "kneel" : plantMoving ? "run" : "aim";
+    }
 
     limbs.torso.position.y = THREE.MathUtils.lerp(standTorsoY, kneelTorsoY, k);
     limbs.hips.position.y = THREE.MathUtils.lerp(standHipsY, kneelHipsY, k);
     limbs.torso.rotation.x = THREE.MathUtils.lerp(standTorsoX, kneelTorsoX, k);
     limbs.torso.rotation.z = sway * (1 - k * 0.85);
     limbs.head.position.y = THREE.MathUtils.lerp(standHeadY, kneelHeadY, k);
-    limbs.head.rotation.y = Math.sin(t * 0.45) * (plantMoving ? 0.03 : 0.012) * (1 - k);
-    limbs.head.rotation.x = plantMoving ? 0.035 * (1 - k) : 0;
+    const headVariation = aimingRifle ? (group.userData.soldierVariation || 0) * 0.37 : 0;
+    // Subtle independent scanning and breathing prevent identical statues.
+    // Keep turns restrained so visual gaze does not contradict AI firing aim.
+    limbs.head.rotation.y = Math.sin(t * 0.39 + headVariation)
+      * (aimingRifle ? (plantMoving ? 0.055 : 0.10) : (plantMoving ? 0.03 : 0.012)) * (1 - k * 0.6);
+    limbs.head.rotation.x = plantMoving ? 0.035 * (1 - k) : Math.sin(t * 0.6 + headVariation) * (aimingRifle ? 0.018 : 0);
 
     limbs.rifle.position.y = THREE.MathUtils.lerp(standRifleY, kneelRifleY, k);
     limbs.rifle.rotation.z = Math.sin(t) * (plantMoving ? 0.025 : 0.008) * (1 - k);

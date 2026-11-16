@@ -59,3 +59,13 @@ Run `npm run build`, then `npm run preview` and `node qa-pwa.mjs`. Test physical
 - Holstered pistols on original hostile soldiers use the original Kestrel-style sidearm geometry rather than the imported model.
 - Automated regression checks cover 13 combat and 15 PWA scenarios, including original weapon parenting, joint visibility, mobile controls and offline solo play.
 - Physical Quest 3 controller interaction and full multiplayer load testing remain unverified; the added effects are lightweight but their device-specific frame rates still require measurement.
+
+## Phase 6: Soldier rig and visual refinement (November 16, 2026)
+
+- Rebuilt the original hostiles' rigid arms and legs as articulated shoulder/elbow and hip/knee chains, with tapered upper-arm, forearm, thigh and calf geometry, knee and elbow pads, gloves, laces and armored boot soles.
+- Moved leg pivots to the hip line so the walking swing no longer rotates around the middle of each leg; added lower-leg follow-through and asymmetric kneeling articulation.
+- Adjusted rifle-support poses during running and kneeling and added small class-varied head scanning movements while preserving the existing AI shooting direction.
+- Added a deterministic, reusable camouflage-pattern material for all five classes, cached by class and power profile; mobile uses lower-resolution cloth maps.
+- Added neck gaiters, body patches, plate-carrier handles, and optional headset ear protection / microphone geometry for desktop quality.
+- Secondary joints remain accessible as `limbs.lElbow`, `rElbow`, `lKnee`, `rKnee`; `soldierRigVersion` is 2. All original enemy behavior, PvP rig logic and multiplayer protocols retain their previous interfaces.
+- These are lightweight original procedural soldiers, not photorealistic scanned or skinned characters. Physically realistic deformation and Quest headset performance still need separate device-level testing.
